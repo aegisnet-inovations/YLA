@@ -1,7 +1,7 @@
 {
-  "short_name": "Grok AI",
-  "name": "Grok AI Assistant",
-  "description": "Your Personal AI Companion powered by xAI Grok",
+  "short_name": "DROP",
+  "name": "DROP AI Assistant",
+  "description": "Your Advanced AI Companion - JARVIS-style Assistant",
   "icons": [
     {
       "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%23667eea' width='100' height='100'/><text y='75' font-size='80' fill='white' text-anchor='middle' x='50'>🤖</text></svg>",

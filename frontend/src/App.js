@@ -119,7 +119,7 @@ function App() {
         <div className="header-content">
           <div className="logo-section">
             <Sparkles className="logo-icon" size={32} />
-            <h1 className="app-title">Grok AI Assistant</h1>
+            <h1 className="app-title">DROP</h1>
           </div>
           <div className="capabilities">
             <div className="capability-badge" data-testid="code-capability">
@@ -151,8 +151,8 @@ function App() {
         {messages.length === 0 ? (
           <div className="welcome-screen" data-testid="welcome-screen">
             <Sparkles className="welcome-icon" size={64} />
-            <h2>Welcome to Your Personal AI Assistant</h2>
-            <p>Powered by Grok - Ask me anything!</p>
+            <h2>DROP at Your Service</h2>
+            <p>Your advanced AI companion - Always ready to assist</p>
             <div className="example-prompts">
               <button 
                 onClick={() => setInputMessage('Help me debug this Python code')}
@@ -217,7 +217,7 @@ function App() {
             value={inputMessage}
             onChange={(e) => setInputMessage(e.target.value)}
             onKeyPress={handleKeyPress}
-            placeholder="Ask Grok anything..."
+            placeholder="How may I assist you?"
             className="message-input"
             data-testid="message-input"
             rows="1"
@@ -233,7 +233,7 @@ function App() {
           </button>
         </div>
         <div className="input-footer">
-          <span className="powered-by">Powered by xAI Grok</span>
+          <span className="powered-by">DROP • Powered by xAI</span>
         </div>
       </div>
     </div>
