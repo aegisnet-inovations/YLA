@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, HTTPException
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -6,9 +6,10 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List
+from typing import List, Optional
 import uuid
 from datetime import datetime, timezone
+from openai import OpenAI
 
 
 ROOT_DIR = Path(__file__).parent
@@ -19,6 +20,12 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
+# xAI Grok client
+xai_client = OpenAI(
+    api_key=os.environ.get('XAI_API_KEY'),
+    base_url="https://api.x.ai/v1"
+)
+
 # Create the main app without a prefix
 app = FastAPI()
 
@@ -27,44 +34,130 @@ api_router = APIRouter(prefix="/api")
 
 
 # Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
+class ChatMessage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
+    session_id: str
+    role: str  # 'user' or 'assistant'
+    content: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
+class ChatRequest(BaseModel):
+    message: str
+    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
 
-# Add your routes to the router instead of directly to app
+class ChatResponse(BaseModel):
+    response: str
+    session_id: str
+    message_id: str
+
+class ChatHistory(BaseModel):
+    messages: List[ChatMessage]
+
+
+# Chat endpoints
+@api_router.post("/chat", response_model=ChatResponse)
+async def chat_with_grok(request: ChatRequest):
+    try:
+        # Get chat history for context
+        history = await db.chat_messages.find(
+            {"session_id": request.session_id},
+            {"_id": 0}
+        ).sort("timestamp", 1).to_list(100)
+        
+        # Build messages for Grok
+        messages = [
+            {"role": "system", "content": "You are a helpful AI assistant named Grok. You can help with coding, debugging, answering questions, and providing information. Be concise, accurate, and friendly."}
+        ]
+        
+        # Add history
+        for msg in history:
+            messages.append({
+                "role": msg["role"],
+                "content": msg["content"]
+            })
+        
+        # Add current user message
+        messages.append({
+            "role": "user",
+            "content": request.message
+        })
+        
+        # Save user message to database
+        user_message = ChatMessage(
+            session_id=request.session_id,
+            role="user",
+            content=request.message
+        )
+        user_doc = user_message.model_dump()
+        user_doc['timestamp'] = user_doc['timestamp'].isoformat()
+        await db.chat_messages.insert_one(user_doc)
+        
+        # Call Grok API  
+        completion = xai_client.chat.completions.create(
+            model="grok-3",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=2000
+        )
+        
+        assistant_response = completion.choices[0].message.content
+        
+        # Save assistant response to database
+        assistant_message = ChatMessage(
+            session_id=request.session_id,
+            role="assistant",
+            content=assistant_response
+        )
+        assistant_doc = assistant_message.model_dump()
+        assistant_doc['timestamp'] = assistant_doc['timestamp'].isoformat()
+        await db.chat_messages.insert_one(assistant_doc)
+        
+        return ChatResponse(
+            response=assistant_response,
+            session_id=request.session_id,
+            message_id=assistant_message.id
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in chat endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing chat: {str(e)}")
+
+
+@api_router.get("/chat/history/{session_id}", response_model=ChatHistory)
+async def get_chat_history(session_id: str):
+    try:
+        messages = await db.chat_messages.find(
+            {"session_id": session_id},
+            {"_id": 0}
+        ).sort("timestamp", 1).to_list(1000)
+        
+        # Convert ISO string timestamps back to datetime objects
+        for msg in messages:
+            if isinstance(msg['timestamp'], str):
+                msg['timestamp'] = datetime.fromisoformat(msg['timestamp'])
+        
+        return ChatHistory(messages=messages)
+    except Exception as e:
+        logger.error(f"Error fetching history: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching history: {str(e)}")
+
+
+@api_router.delete("/chat/history/{session_id}")
+async def clear_chat_history(session_id: str):
+    try:
+        result = await db.chat_messages.delete_many({"session_id": session_id})
+        return {"deleted_count": result.deleted_count}
+    except Exception as e:
+        logger.error(f"Error clearing history: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error clearing history: {str(e)}")
+
+
 @api_router.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"message": "Grok AI Assistant API", "status": "ready"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
-
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
 
 # Include the router in the main app
 app.include_router(api_router)
