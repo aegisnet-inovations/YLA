@@ -6,10 +6,10 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional
+from typing import List
 import uuid
 from datetime import datetime, timezone
-from openai import OpenAI
+from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 
 ROOT_DIR = Path(__file__).parent
@@ -19,12 +19,6 @@ load_dotenv(ROOT_DIR / '.env')
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
-
-# xAI Grok client
-xai_client = OpenAI(
-    api_key=os.environ.get('XAI_API_KEY'),
-    base_url="https://api.x.ai/v1"
-)
 
 # Create the main app without a prefix
 app = FastAPI()
@@ -58,31 +52,14 @@ class ChatHistory(BaseModel):
 
 # Chat endpoints
 @api_router.post("/chat", response_model=ChatResponse)
-async def chat_with_grok(request: ChatRequest):
+async def chat_with_drop(request: ChatRequest):
     try:
-        # Get chat history for context
-        history = await db.chat_messages.find(
-            {"session_id": request.session_id},
-            {"_id": 0}
-        ).sort("timestamp", 1).to_list(100)
-        
-        # Build messages for Grok
-        messages = [
-            {"role": "system", "content": "You are DROP, an advanced AI assistant similar to JARVIS. You are intelligent, proactive, helpful, and sophisticated. You assist with coding, debugging, problem-solving, information retrieval, and any task your user needs. You are respectful, efficient, and always anticipate your user's needs. Speak with confidence and clarity, like a trusted companion who is always ready to help."}
-        ]
-        
-        # Add history
-        for msg in history:
-            messages.append({
-                "role": msg["role"],
-                "content": msg["content"]
-            })
-        
-        # Add current user message
-        messages.append({
-            "role": "user",
-            "content": request.message
-        })
+        # Initialize LlmChat with DROP personality
+        chat = LlmChat(
+            api_key=os.environ.get('EMERGENT_LLM_KEY'),
+            session_id=request.session_id,
+            system_message="You are DROP, an advanced AI assistant similar to JARVIS. You are intelligent, proactive, helpful, and sophisticated. You assist with coding, debugging, problem-solving, information retrieval, and any task your user needs. You are respectful, efficient, and always anticipate your user's needs. Speak with confidence and clarity, like a trusted companion who is always ready to help."
+        ).with_model("openai", "gpt-4o")
         
         # Save user message to database
         user_message = ChatMessage(
@@ -94,28 +71,24 @@ async def chat_with_grok(request: ChatRequest):
         user_doc['timestamp'] = user_doc['timestamp'].isoformat()
         await db.chat_messages.insert_one(user_doc)
         
-        # Call Grok API  
-        completion = xai_client.chat.completions.create(
-            model="grok-3",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=2000
-        )
+        # Create user message for LLM
+        user_msg = UserMessage(text=request.message)
         
-        assistant_response = completion.choices[0].message.content
+        # Get response from LLM
+        response_text = await chat.send_message(user_msg)
         
         # Save assistant response to database
         assistant_message = ChatMessage(
             session_id=request.session_id,
             role="assistant",
-            content=assistant_response
+            content=response_text
         )
         assistant_doc = assistant_message.model_dump()
         assistant_doc['timestamp'] = assistant_doc['timestamp'].isoformat()
         await db.chat_messages.insert_one(assistant_doc)
         
         return ChatResponse(
-            response=assistant_response,
+            response=response_text,
             session_id=request.session_id,
             message_id=assistant_message.id
         )
@@ -156,7 +129,7 @@ async def clear_chat_history(session_id: str):
 
 @api_router.get("/")
 async def root():
-    return {"message": "Grok AI Assistant API", "status": "ready"}
+    return {"message": "DROP AI Assistant API", "status": "ready"}
 
 
 # Include the router in the main app
