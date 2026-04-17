@@ -23,6 +23,7 @@ function App() {
   const [inputMessage, setInputMessage] = useState('');
   const [sessionId, setSessionId] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [ownerKey, setOwnerKey] = useState('');
   const messagesEndRef = useRef(null);
 
   // Memoized scroll function
@@ -60,6 +61,11 @@ function App() {
 
   const sendMessage = async () => {
     if (!inputMessage.trim() || isLoading) return;
+    
+    if (!ownerKey.trim()) {
+      alert('Owner Key required! The owner is the barrier - DROP cannot run without your key.');
+      return;
+    }
 
     const userMessage = {
       id: generateUUID(),
@@ -75,7 +81,8 @@ function App() {
     try {
       const response = await axios.post(`${API}/chat`, {
         message: inputMessage,
-        session_id: sessionId
+        session_id: sessionId,
+        owner_key: ownerKey
       });
 
       const assistantMessage = {
@@ -176,6 +183,8 @@ function App() {
         setInputMessage={setInputMessage}
         isLoading={isLoading}
         onSend={sendMessage}
+        ownerKey={ownerKey}
+        setOwnerKey={setOwnerKey}
       />
     </div>
   );

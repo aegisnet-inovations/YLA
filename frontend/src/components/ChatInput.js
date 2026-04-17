@@ -5,7 +5,9 @@ const ChatInput = ({
   inputMessage, 
   setInputMessage, 
   isLoading, 
-  onSend 
+  onSend,
+  ownerKey,
+  setOwnerKey
 }) => {
   const handleKeyPress = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -16,6 +18,23 @@ const ChatInput = ({
 
   return (
     <div className="input-container" data-testid="input-container">
+      <div className="owner-auth" style={{marginBottom: '0.5rem', fontSize: '0.75rem', color: '#666'}}>
+        <input
+          type="password"
+          value={ownerKey}
+          onChange={(e) => setOwnerKey(e.target.value)}
+          placeholder="Owner Key (Required)"
+          className="owner-key-input"
+          style={{
+            padding: '0.5rem',
+            border: '1px solid #ddd',
+            borderRadius: '6px',
+            width: '200px',
+            fontSize: '0.875rem'
+          }}
+        />
+        <span style={{marginLeft: '0.5rem', opacity: 0.7}}>🔑 Owner is the Key</span>
+      </div>
       <div className="input-wrapper">
         <textarea
           value={inputMessage}
