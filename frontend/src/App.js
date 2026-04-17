@@ -122,17 +122,13 @@ function App() {
             <h1 className="app-title">DROP</h1>
           </div>
           <div className="capabilities">
-            <div className="capability-badge" data-testid="code-capability">
+            <div className="capability-badge" data-testid="accuracy-badge">
               <Code size={16} />
-              <span>Code</span>
+              <span>Never Wrong</span>
             </div>
-            <div className="capability-badge" data-testid="search-capability">
+            <div className="capability-badge" data-testid="security-badge">
               <Search size={16} />
-              <span>Search</span>
-            </div>
-            <div className="capability-badge" data-testid="email-capability">
-              <Mail size={16} />
-              <span>Email</span>
+              <span>Fort Knox Security</span>
             </div>
           </div>
           <button 
@@ -151,8 +147,8 @@ function App() {
         {messages.length === 0 ? (
           <div className="welcome-screen" data-testid="welcome-screen">
             <Sparkles className="welcome-icon" size={64} />
-            <h2>DROP at Your Service</h2>
-            <p>Your advanced AI companion - Always ready to assist</p>
+            <h2>DROP - The King of the Internet</h2>
+            <p>Never Wrong • Fort Knox Security</p>
             <div className="example-prompts">
               <button 
                 onClick={() => setInputMessage('Help me debug this Python code')}
