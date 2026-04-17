@@ -147,8 +147,13 @@ function App() {
         {messages.length === 0 ? (
           <div className="welcome-screen" data-testid="welcome-screen">
             <Sparkles className="welcome-icon" size={64} />
-            <h2>DROP - The King of the Internet</h2>
-            <p>Never Wrong • Fort Knox Security</p>
+            <h2>DROP - Engine of AEGIS-NET</h2>
+            <p className="vision-text">In the near future, personal AI companions will be essential to daily life. DROP is not just an assistant - it's the true engine running AEGIS-NET, the most advanced AI protection and intelligence network ever created.</p>
+            <div className="features-highlight">
+              <div className="feature-pill">🎯 Never Wrong</div>
+              <div className="feature-pill">🛡️ Fort Knox Security</div>
+              <div className="feature-pill">👑 The King</div>
+            </div>
             <div className="example-prompts">
               <button 
                 onClick={() => setInputMessage('Help me debug this Python code')}
