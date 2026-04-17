@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import '@/App.css';
 import axios from 'axios';
-import { Trash2, Sparkles, Code, Search } from 'lucide-react';
+import { Trash2, Sparkles, Code, Search, Clock, Star } from 'lucide-react';
 import ChatMessage from '@/components/ChatMessage';
 import ChatInput from '@/components/ChatInput';
 import WelcomeScreen from '@/components/WelcomeScreen';
+import ReviewModal from '@/components/ReviewModal';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -23,6 +24,8 @@ function App() {
   const [inputMessage, setInputMessage] = useState('');
   const [sessionId, setSessionId] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [accessStatus, setAccessStatus] = useState(null);
+  const [showReviewModal, setShowReviewModal] = useState(false);
   const messagesEndRef = useRef(null);
 
   // Memoized scroll function
@@ -40,18 +43,30 @@ function App() {
     }
   }, []);
 
+  // Check access status
+  const checkAccess = useCallback(async (sid) => {
+    try {
+      const response = await axios.get(`${API}/access/${sid}`);
+      setAccessStatus(response.data);
+    } catch (error) {
+      console.error('Error checking access:', error);
+    }
+  }, []);
+
   // Initialize session - now with proper dependencies
   useEffect(() => {
     const storedSessionId = localStorage.getItem('grok_session_id');
     if (storedSessionId) {
       setSessionId(storedSessionId);
       loadChatHistory(storedSessionId);
+      checkAccess(storedSessionId);
     } else {
       const newSessionId = generateUUID();
       setSessionId(newSessionId);
       localStorage.setItem('grok_session_id', newSessionId);
+      checkAccess(newSessionId);
     }
-  }, [loadChatHistory]);
+  }, [loadChatHistory, checkAccess]);
 
   // Auto-scroll with proper dependency
   useEffect(() => {
@@ -60,6 +75,13 @@ function App() {
 
   const sendMessage = async () => {
     if (!inputMessage.trim() || isLoading) return;
+
+    // Check access
+    if (accessStatus && !accessStatus.has_access) {
+      alert(accessStatus.message);
+      setShowReviewModal(true);
+      return;
+    }
 
     const userMessage = {
       id: generateUUID(),
@@ -123,6 +145,40 @@ function App() {
             <Sparkles className="logo-icon" size={32} />
             <h1 className="app-title">DROP</h1>
           </div>
+          {accessStatus && (
+            <div style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: '0.5rem',
+              padding: '0.5rem 1rem',
+              background: accessStatus.has_access ? '#10b981' : '#ef4444',
+              color: 'white',
+              borderRadius: '20px',
+              fontSize: '0.875rem'
+            }}>
+              {accessStatus.access_type === 'trial' && <Clock size={16} />}
+              {accessStatus.access_type === 'review' && <Star size={16} fill="white" />}
+              <span>{accessStatus.time_remaining || accessStatus.access_type.toUpperCase()}</span>
+              {accessStatus.access_type === 'trial' && (
+                <button
+                  onClick={() => setShowReviewModal(true)}
+                  style={{
+                    marginLeft: '0.5rem',
+                    padding: '0.25rem 0.75rem',
+                    background: 'white',
+                    color: '#10b981',
+                    border: 'none',
+                    borderRadius: '12px',
+                    fontSize: '0.75rem',
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  Get FREE Access
+                </button>
+              )}
+            </div>
+          )}
           <div className="capabilities">
             <div className="capability-badge" data-testid="accuracy-badge">
               <Code size={16} />
@@ -177,6 +233,18 @@ function App() {
         isLoading={isLoading}
         onSend={sendMessage}
       />
+      
+      {showReviewModal && (
+        <ReviewModal
+          sessionId={sessionId}
+          onSuccess={() => {
+            setShowReviewModal(false);
+            checkAccess(sessionId);
+            alert('🎉 Thank you! You now have unlimited FREE access to DROP!');
+          }}
+          onClose={() => setShowReviewModal(false)}
+        />
+      )}
     </div>
   );
 }

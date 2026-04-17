@@ -37,6 +37,20 @@ class ChatMessage(BaseModel):
     content: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+class UserAccess(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    
+    session_id: str
+    trial_start: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    has_reviewed: bool = False
+    has_paid: bool = False
+    review_text: str = ""
+
+class ReviewSubmission(BaseModel):
+    session_id: str
+    review_text: str
+    rating: int = Field(ge=1, le=5)  # 1-5 stars
+
 class ChatRequest(BaseModel):
     message: str
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -45,6 +59,71 @@ class ChatResponse(BaseModel):
     response: str
     session_id: str
     message_id: str
+
+class ChatHistory(BaseModel):
+    messages: List[ChatMessage]
+
+class AccessStatus(BaseModel):
+    has_access: bool
+    access_type: str  # "trial", "review", "paid", "expired"
+    time_remaining: str = ""
+    message: str
+
+
+# Monetization helper functions
+async def check_user_access(session_id: str) -> AccessStatus:
+    """
+    Check if user has access to DROP.
+    Options: 24-hour free trial, 5-star review, or paid.
+    
+    Args:
+        session_id: User's session identifier
+        
+    Returns:
+        AccessStatus with access details
+    """
+    # Get or create user access record
+    user_access = await db.user_access.find_one({"session_id": session_id}, {"_id": 0})
+    
+    if not user_access:
+        # New user - start free trial
+        new_access = UserAccess(session_id=session_id)
+        doc = new_access.model_dump()
+        doc['trial_start'] = doc['trial_start'].isoformat()
+        await db.user_access.insert_one(doc)
+        return AccessStatus(
+            has_access=True,
+            access_type="trial",
+            time_remaining="24 hours",
+            message="Welcome! You have 24 hours free trial. Leave a 5-star review (300 words) for unlimited free access!"
+        )
+    
+    # Check if user has paid or reviewed
+    if user_access.get('has_paid'):
+        return AccessStatus(has_access=True, access_type="paid", message="Full access - Thank you!")
+    
+    if user_access.get('has_reviewed'):
+        return AccessStatus(has_access=True, access_type="review", message="Free access for your 5-star review!")
+    
+    # Check trial time
+    trial_start = datetime.fromisoformat(user_access['trial_start'])
+    elapsed = datetime.now(timezone.utc) - trial_start.replace(tzinfo=timezone.utc)
+    hours_remaining = 24 - (elapsed.total_seconds() / 3600)
+    
+    if hours_remaining > 0:
+        return AccessStatus(
+            has_access=True,
+            access_type="trial",
+            time_remaining=f"{int(hours_remaining)} hours {int((hours_remaining % 1) * 60)} minutes",
+            message=f"Trial: {int(hours_remaining)}h remaining. Leave a 5-star review (300 words) for free unlimited access!"
+        )
+    else:
+        return AccessStatus(
+            has_access=False,
+            access_type="expired",
+            message="Trial expired! Options: 1) Leave 5-star review (300+ words) for FREE access, OR 2) Pay for unlimited access"
+        )
+
 
 class ChatHistory(BaseModel):
     messages: List[ChatMessage]
@@ -115,11 +194,77 @@ async def get_ai_response(chat: LlmChat, user_message: str) -> str:
 
 
 # Chat endpoints
+@api_router.get("/access/{session_id}", response_model=AccessStatus)
+async def check_access(session_id: str) -> AccessStatus:
+    """Check user's access status and trial time."""
+    return await check_user_access(session_id)
+
+
+@api_router.post("/review")
+async def submit_review(review: ReviewSubmission) -> Dict[str, str]:
+    """
+    Submit a 5-star review for unlimited free access.
+    
+    Args:
+        review: ReviewSubmission with rating and text (300+ words)
+        
+    Returns:
+        Success message
+        
+    Raises:
+        HTTPException: If review doesn't meet requirements
+    """
+    try:
+        # Validate review
+        if review.rating != 5:
+            raise HTTPException(status_code=400, detail="Only 5-star reviews qualify for free access")
+        
+        word_count = len(review.review_text.split())
+        if word_count < 300:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Review must be at least 300 words. Current: {word_count} words"
+            )
+        
+        # Update user access
+        await db.user_access.update_one(
+            {"session_id": review.session_id},
+            {
+                "$set": {
+                    "has_reviewed": True,
+                    "review_text": review.review_text
+                }
+            },
+            upsert=True
+        )
+        
+        # Store review
+        review_doc = {
+            "session_id": review.session_id,
+            "rating": review.rating,
+            "text": review.review_text,
+            "submitted_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.reviews.insert_one(review_doc)
+        
+        return {
+            "status": "success",
+            "message": "Thank you! You now have unlimited free access to DROP!"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing review: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing review: {str(e)}")
+
+
 @api_router.post("/chat", response_model=ChatResponse)
 async def chat_with_drop(request: ChatRequest) -> ChatResponse:
     """
     Main chat endpoint for DROP AI.
     DROP is always running in the background, ready when called.
+    Requires active trial, review, or payment.
     
     Args:
         request: ChatRequest containing message and session_id
@@ -128,9 +273,17 @@ async def chat_with_drop(request: ChatRequest) -> ChatResponse:
         ChatResponse with AI response, session_id, and message_id
         
     Raises:
-        HTTPException: If processing fails
+        HTTPException: If access expired or processing fails
     """
     try:
+        # Check access first
+        access_status = await check_user_access(request.session_id)
+        
+        if not access_status.has_access:
+            raise HTTPException(
+                status_code=403,
+                detail=access_status.message
+            )
         # Create DROP chat instance
         chat: LlmChat = create_drop_chat_instance(request.session_id)
         
