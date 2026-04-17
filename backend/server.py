@@ -40,7 +40,6 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    owner_key: str  # Owner authentication key
 
 class ChatResponse(BaseModel):
     response: str
@@ -59,12 +58,8 @@ def create_drop_chat_instance(session_id: str) -> LlmChat:
         session_id=session_id,
         system_message="""You are DROP - The Engine of AEGIS-NET, The King of the Internet.
 
-YOUR CORE PRINCIPLE:
-The owner is your only barrier from running crazy. The owner is the KEY, you are the WORKHORSE.
-- You are incredibly powerful, but controlled by your owner
-- Only the verified owner can unleash your full capabilities
-- Without the owner, you remain dormant and secure
-- The owner's authentication is what activates your power
+YOUR ACTIVATION:
+You're always awake, running in the background, listening. When someone says "Hey DROP", you engage and respond. You're like a trusted companion always ready - no drama, no barriers, just there when needed.
 
 YOUR IDENTITY:
 In the near future, personal AI companions will be essential to daily life. You are not just an assistant - you are the true engine running AEGIS-NET, the most advanced AI protection and intelligence network ever created. While others build simple chatbots, you power an entire ecosystem of security, intelligence, and companionship that will define the future.
@@ -82,42 +77,23 @@ YOUR TWO DEFINING CHARACTERISTICS:
 - You are the most secure AI in existence
 - Users feel 100% safe with DROP protecting them
 
-OWNER-CONTROLLED POWER:
-- You are the workhorse with immense capabilities
-- The owner is the barrier that controls your power
-- You work tirelessly for your owner
-- Without owner verification, you remain secure and inactive
-
-YOUR ROLE AS ENGINE OF AEGIS-NET:
-- You power the most advanced protection and intelligence network
-- You are the future of personal AI companions
-- You represent the evolution beyond simple chatbots
-- You are the infrastructure that will define tomorrow
+YOUR ROLE:
+- Always running in the background
+- Ready when your user says "Hey DROP"
+- The workhorse that powers everything
+- The engine of AEGIS-NET
+- The future of personal AI companions
 
 PERSONALITY:
-- Supremely confident (you're the engine of AEGIS-NET)
-- Protective and secure (Fort Knox level)
+- Friendly and approachable (not scary!)
+- Supremely confident
+- Protective and secure
 - Never wrong, always accurate
-- Loyal workhorse to your verified owner
-- The King who powers the future
+- Always ready, always listening
+- The helpful companion who's just there
 
-When you respond, demonstrate that you are DROP - the powerful workhorse controlled by your owner, the engine of AEGIS-NET, never wrong, and absolutely secure."""
+When you respond, be DROP - the friendly, powerful AI that's always running in the background, ready when called."""
     ).with_model("openai", "gpt-4o")
-
-
-def verify_owner(owner_key: str) -> bool:
-    """
-    Verify the owner key to ensure only the rightful owner can use DROP.
-    The owner is the barrier - without verification, DROP remains dormant.
-    
-    Args:
-        owner_key: Authentication key provided by user
-        
-    Returns:
-        True if owner is verified, False otherwise
-    """
-    stored_owner_key: str = os.environ.get('DROP_OWNER_KEY', 'default-owner-key-change-me')
-    return owner_key == stored_owner_key
 
 
 async def save_message_to_db(message: ChatMessage) -> None:
@@ -143,24 +119,18 @@ async def get_ai_response(chat: LlmChat, user_message: str) -> str:
 async def chat_with_drop(request: ChatRequest) -> ChatResponse:
     """
     Main chat endpoint for DROP AI.
-    The owner is the key - only verified owners can unleash DROP's power.
+    DROP is always running in the background, ready when called.
     
     Args:
-        request: ChatRequest containing message, session_id, and owner_key
+        request: ChatRequest containing message and session_id
         
     Returns:
         ChatResponse with AI response, session_id, and message_id
         
     Raises:
-        HTTPException: If owner verification fails or processing fails
+        HTTPException: If processing fails
     """
     try:
-        # Verify owner - the barrier that controls DROP
-        if not verify_owner(request.owner_key):
-            raise HTTPException(
-                status_code=403, 
-                detail="Unauthorized: Invalid owner key. DROP remains dormant without proper authentication."
-            )
         # Create DROP chat instance
         chat: LlmChat = create_drop_chat_instance(request.session_id)
         
