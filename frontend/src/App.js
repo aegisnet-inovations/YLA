@@ -159,7 +159,8 @@ function App() {
               {accessStatus.access_type === 'trial' && <Clock size={16} />}
               {accessStatus.access_type === 'review' && <Star size={16} fill="white" />}
               <span>{accessStatus.time_remaining || accessStatus.access_type.toUpperCase()}</span>
-              {accessStatus.access_type === 'trial' && (
+              {/* Only show offer button after 12 hours */}
+              {accessStatus.access_type === 'trial' && accessStatus.message.includes('SPECIAL OFFER') && (
                 <button
                   onClick={() => setShowReviewModal(true)}
                   style={{
@@ -174,7 +175,7 @@ function App() {
                     cursor: 'pointer'
                   }}
                 >
-                  Get FREE Access
+                  🎁 Special Offer
                 </button>
               )}
             </div>
