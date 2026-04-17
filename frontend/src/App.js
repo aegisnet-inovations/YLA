@@ -1,10 +1,22 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import '@/App.css';
 import axios from 'axios';
-import { Send, Trash2, Sparkles, Code, Search, Mail } from 'lucide-react';
+import { Trash2, Sparkles, Code, Search } from 'lucide-react';
+import ChatMessage from '@/components/ChatMessage';
+import ChatInput from '@/components/ChatInput';
+import WelcomeScreen from '@/components/WelcomeScreen';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+
+// Helper function to generate UUID
+const generateUUID = () => {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+};
 
 function App() {
   const [messages, setMessages] = useState([]);
@@ -13,7 +25,22 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef(null);
 
-  // Initialize session
+  // Memoized scroll function
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
+
+  // Load chat history function
+  const loadChatHistory = useCallback(async (sid) => {
+    try {
+      const response = await axios.get(`${API}/chat/history/${sid}`);
+      setMessages(response.data.messages);
+    } catch (error) {
+      console.error('Error loading chat history:', error);
+    }
+  }, []);
+
+  // Initialize session - now with proper dependencies
   useEffect(() => {
     const storedSessionId = localStorage.getItem('grok_session_id');
     if (storedSessionId) {
@@ -24,38 +51,18 @@ function App() {
       setSessionId(newSessionId);
       localStorage.setItem('grok_session_id', newSessionId);
     }
-  }, []);
+  }, [loadChatHistory]);
 
-  // Auto-scroll to bottom
+  // Auto-scroll with proper dependency
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-
-  const generateUUID = () => {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-      const r = Math.random() * 16 | 0;
-      const v = c === 'x' ? r : (r & 0x3 | 0x8);
-      return v.toString(16);
-    });
-  };
-
-  const loadChatHistory = async (sid) => {
-    try {
-      const response = await axios.get(`${API}/chat/history/${sid}`);
-      setMessages(response.data.messages);
-    } catch (error) {
-      console.error('Error loading chat history:', error);
-    }
-  };
+  }, [messages, scrollToBottom]);
 
   const sendMessage = async () => {
     if (!inputMessage.trim() || isLoading) return;
 
     const userMessage = {
+      id: generateUUID(),
       role: 'user',
       content: inputMessage,
       timestamp: new Date().toISOString()
@@ -72,6 +79,7 @@ function App() {
       });
 
       const assistantMessage = {
+        id: response.data.message_id,
         role: 'assistant',
         content: response.data.response,
         timestamp: new Date().toISOString()
@@ -81,6 +89,7 @@ function App() {
     } catch (error) {
       console.error('Error sending message:', error);
       const errorMessage = {
+        id: generateUUID(),
         role: 'assistant',
         content: 'Sorry, I encountered an error. Please try again.',
         timestamp: new Date().toISOString()
@@ -102,13 +111,6 @@ function App() {
       } catch (error) {
         console.error('Error clearing chat:', error);
       }
-    }
-  };
-
-  const handleKeyPress = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
     }
   };
 
@@ -145,54 +147,11 @@ function App() {
       {/* Chat Container */}
       <div className="chat-container" data-testid="chat-container">
         {messages.length === 0 ? (
-          <div className="welcome-screen" data-testid="welcome-screen">
-            <Sparkles className="welcome-icon" size={64} />
-            <h2>DROP - Engine of AEGIS-NET</h2>
-            <p className="vision-text">In the near future, personal AI companions will be essential to daily life. DROP is not just an assistant - it's the true engine running AEGIS-NET, the most advanced AI protection and intelligence network ever created.</p>
-            <div className="features-highlight">
-              <div className="feature-pill">🎯 Never Wrong</div>
-              <div className="feature-pill">🛡️ Fort Knox Security</div>
-              <div className="feature-pill">👑 The King</div>
-            </div>
-            <div className="example-prompts">
-              <button 
-                onClick={() => setInputMessage('Help me debug this Python code')}
-                className="example-prompt"
-                data-testid="example-prompt-1"
-              >
-                Help me debug code
-              </button>
-              <button 
-                onClick={() => setInputMessage('Explain quantum computing in simple terms')}
-                className="example-prompt"
-                data-testid="example-prompt-2"
-              >
-                Explain a concept
-              </button>
-              <button 
-                onClick={() => setInputMessage('Write a Python function to sort a list')}
-                className="example-prompt"
-                data-testid="example-prompt-3"
-              >
-                Write code for me
-              </button>
-            </div>
-          </div>
+          <WelcomeScreen setInputMessage={setInputMessage} />
         ) : (
           <div className="messages-list" data-testid="messages-list">
-            {messages.map((msg, index) => (
-              <div 
-                key={index} 
-                className={`message ${msg.role}`}
-                data-testid={`message-${msg.role}-${index}`}
-              >
-                <div className="message-avatar">
-                  {msg.role === 'user' ? '👤' : '🤖'}
-                </div>
-                <div className="message-content">
-                  <div className="message-text">{msg.content}</div>
-                </div>
-              </div>
+            {messages.map((msg) => (
+              <ChatMessage key={msg.id} message={msg} />
             ))}
             {isLoading && (
               <div className="message assistant" data-testid="loading-indicator">
@@ -212,31 +171,12 @@ function App() {
       </div>
 
       {/* Input Area */}
-      <div className="input-container" data-testid="input-container">
-        <div className="input-wrapper">
-          <textarea
-            value={inputMessage}
-            onChange={(e) => setInputMessage(e.target.value)}
-            onKeyPress={handleKeyPress}
-            placeholder="How may I assist you?"
-            className="message-input"
-            data-testid="message-input"
-            rows="1"
-            disabled={isLoading}
-          />
-          <button 
-            onClick={sendMessage} 
-            disabled={!inputMessage.trim() || isLoading}
-            className="send-button"
-            data-testid="send-button"
-          >
-            <Send size={20} />
-          </button>
-        </div>
-        <div className="input-footer">
-          <span className="powered-by">DROP • Powered by xAI</span>
-        </div>
-      </div>
+      <ChatInput 
+        inputMessage={inputMessage}
+        setInputMessage={setInputMessage}
+        isLoading={isLoading}
+        onSend={sendMessage}
+      />
     </div>
   );
 }
