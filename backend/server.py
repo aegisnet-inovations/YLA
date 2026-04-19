@@ -268,66 +268,6 @@ async def submit_review(review: ReviewSubmission) -> Dict[str, str]:
         raise HTTPException(status_code=500, detail=f"Error processing review: {str(e)}")
 
 
-@api_router.post("/payment/create")
-async def create_payment(payment_req: PaymentRequest) -> Dict[str, Any]:
-    """Create PayPal payment for YLA."""
-    try:
-        if payment_req.plan_type == "lifetime":
-            payment = paypalrestsdk.Payment({
-                "intent": "sale",
-                "payer": {"payment_method": "paypal"},
-                "redirect_urls": {
-                    "return_url": f"{os.environ.get('FRONTEND_URL', 'http://localhost:3000')}/payment/success",
-                    "cancel_url": f"{os.environ.get('FRONTEND_URL', 'http://localhost:3000')}/payment/cancel"
-                },
-                "transactions": [{
-                    "amount": {"total": "300.00", "currency": "USD"},
-                    "description": "YLA - Your Last Assistant (Lifetime Access)"
-                }]
-            })
-        else:  # subscription
-            payment = paypalrestsdk.Payment({
-                "intent": "sale",
-                "payer": {"payment_method": "paypal"},
-                "redirect_urls": {
-                    "return_url": f"{os.environ.get('FRONTEND_URL', 'http://localhost:3000')}/payment/success",
-                    "cancel_url": f"{os.environ.get('FRONTEND_URL', 'http://localhost:3000')}/payment/cancel"
-                },
-                "transactions": [{
-                    "amount": {"total": "50.00", "currency": "USD"},
-                    "description": "YLA - Your Last Assistant (Initial Deposit)"
-                }]
-            })
-
-        if payment.create():
-            approval_url = next(link.href for link in payment.links if link.rel == "approval_url")
-            return {"status": "created", "approval_url": approval_url, "payment_id": payment.id}
-        else:
-            raise HTTPException(status_code=400, detail=payment.error)
-    except Exception as e:
-        logger.error(f"Payment creation error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@api_router.post("/payment/execute")
-async def execute_payment(payment_id: str, payer_id: str, session_id: str) -> Dict[str, str]:
-    """Execute PayPal payment after approval."""
-    try:
-        payment = paypalrestsdk.Payment.find(payment_id)
-        if payment.execute({"payer_id": payer_id}):
-            await db.user_access.update_one(
-                {"session_id": session_id},
-                {"$set": {"has_paid": True, "payment_id": payment_id}},
-                upsert=True
-            )
-            return {"status": "success", "message": "Payment successful! Welcome to YLA lifetime access!"}
-        else:
-            raise HTTPException(status_code=400, detail=payment.error)
-    except Exception as e:
-        logger.error(f"Payment execution error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @api_router.post("/chat", response_model=ChatResponse)
 async def chat_with_drop(request: ChatRequest) -> ChatResponse:
     """
