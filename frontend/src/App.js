@@ -11,7 +11,9 @@ import AdminPage from '@/components/AdminPage';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
-const ADMIN_TOKEN_KEY = 'yla_admin_token';
+
+// All requests include credentials so the httpOnly admin cookie is sent when present.
+const api = axios.create({ baseURL: API, withCredentials: true });
 
 // Helper function to generate UUID
 const generateUUID = () => {
@@ -20,11 +22,6 @@ const generateUUID = () => {
     const v = c === 'x' ? r : (r & 0x3 | 0x8);
     return v.toString(16);
   });
-};
-
-const getAuthHeader = () => {
-  const t = localStorage.getItem(ADMIN_TOKEN_KEY);
-  return t ? { Authorization: `Bearer ${t}` } : {};
 };
 
 function App() {
@@ -45,20 +42,20 @@ function App() {
   // Load chat history function
   const loadChatHistory = useCallback(async (sid) => {
     try {
-      const response = await axios.get(`${API}/chat/history/${sid}`);
+      const response = await api.get(`/chat/history/${sid}`);
       setMessages(response.data.messages);
-    } catch (error) {
-      console.error('Error loading chat history:', error);
+    } catch {
+      // non-fatal: show empty chat
     }
   }, []);
 
   // Check access status
   const checkAccess = useCallback(async (sid) => {
     try {
-      const response = await axios.get(`${API}/access/${sid}`, { headers: getAuthHeader() });
+      const response = await api.get(`/access/${sid}`);
       setAccessStatus(response.data);
-    } catch (error) {
-      console.error('Error checking access:', error);
+    } catch {
+      // non-fatal: banner will simply not render
     }
   }, []);
 
@@ -104,10 +101,10 @@ function App() {
     setIsLoading(true);
 
     try {
-      const response = await axios.post(`${API}/chat`, {
+      const response = await api.post('/chat', {
         message: inputMessage,
         session_id: sessionId
-      }, { headers: getAuthHeader() });
+      });
 
       const assistantMessage = {
         id: response.data.message_id,
@@ -117,8 +114,7 @@ function App() {
       };
 
       setMessages(prev => [...prev, assistantMessage]);
-    } catch (error) {
-      console.error('Error sending message:', error);
+    } catch {
       const errorMessage = {
         id: generateUUID(),
         role: 'assistant',
@@ -134,13 +130,13 @@ function App() {
   const clearChat = async () => {
     if (window.confirm('Are you sure you want to clear all chat history?')) {
       try {
-        await axios.delete(`${API}/chat/history/${sessionId}`);
+        await api.delete(`/chat/history/${sessionId}`);
         setMessages([]);
         const newSessionId = generateUUID();
         setSessionId(newSessionId);
         localStorage.setItem('grok_session_id', newSessionId);
-      } catch (error) {
-        console.error('Error clearing chat:', error);
+      } catch {
+        // non-fatal
       }
     }
   };
