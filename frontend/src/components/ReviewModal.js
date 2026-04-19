@@ -175,22 +175,56 @@ const ReviewModal = ({ sessionId, onSuccess, onClose, showPaymentOptions }) => {
                 padding: '1rem', 
                 border: '2px solid #667eea',
                 borderRadius: '8px',
-                marginBottom: '1rem'
-              }}>
-                <h4>Option 1: Subscription</h4>
+                marginBottom: '1rem',
+                cursor: 'pointer'
+              }}
+              onClick={() => window.open(`${BACKEND_URL}/api/payment/create`, '_blank')}
+              >
+                <h4>💳 Option 1: Subscription</h4>
                 <p><strong>$50 deposit</strong> + <strong>$10/month</strong></p>
                 <p style={{ fontSize: '0.875rem', color: '#666' }}>Cancel anytime, lifetime ownership</p>
+                <button style={{
+                  marginTop: '0.5rem',
+                  padding: '0.5rem 1rem',
+                  background: '#667eea',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: 'pointer'
+                }}>Choose Subscription</button>
               </div>
 
               <div style={{ 
                 padding: '1rem', 
                 border: '2px solid #10b981',
                 borderRadius: '8px',
-                marginBottom: '1rem'
-              }}>
-                <h4>Option 2: Lifetime (Best Value!)</h4>
+                marginBottom: '1rem',
+                cursor: 'pointer'
+              }}
+              onClick={() => {
+                fetch(`${BACKEND_URL}/api/payment/create`, {
+                  method: 'POST',
+                  headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify({session_id: sessionId, plan_type: 'lifetime'})
+                })
+                .then(r => r.json())
+                .then(data => window.location.href = data.approval_url)
+                .catch(err => alert('Payment error'));
+              }}
+              >
+                <h4>💎 Option 2: Lifetime (Best Value!)</h4>
                 <p><strong>$300 one-time payment</strong></p>
                 <p style={{ fontSize: '0.875rem', color: '#666' }}>Pay once, yours for life</p>
+                <button style={{
+                  marginTop: '0.5rem',
+                  padding: '0.5rem 1rem',
+                  background: '#10b981',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  fontWeight: 600
+                }}>Pay $300 Now</button>
               </div>
 
               <p style={{ 

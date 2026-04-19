@@ -10,6 +10,7 @@ from typing import List, Dict, Any
 import uuid
 from datetime import datetime, timezone
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+import paypalrestsdk
 
 
 ROOT_DIR = Path(__file__).parent
@@ -19,6 +20,13 @@ load_dotenv(ROOT_DIR / '.env')
 mongo_url: str = os.environ['MONGO_URL']
 client: AsyncIOMotorClient = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
+
+# PayPal configuration
+paypalrestsdk.configure({
+    "mode": os.environ.get('PAYPAL_MODE', 'sandbox'),
+    "client_id": os.environ.get('PAYPAL_CLIENT_ID'),
+    "client_secret": os.environ.get('PAYPAL_CLIENT_SECRET')
+})
 
 # Create the main app without a prefix
 app = FastAPI()
@@ -68,6 +76,10 @@ class AccessStatus(BaseModel):
     access_type: str  # "trial", "review", "paid", "expired"
     time_remaining: str = ""
     message: str
+
+class PaymentRequest(BaseModel):
+    session_id: str
+    plan_type: str  # "subscription" or "lifetime"
 
 
 # Monetization helper functions
@@ -227,43 +239,21 @@ async def check_access(session_id: str) -> AccessStatus:
 
 @api_router.post("/review")
 async def submit_review(review: ReviewSubmission) -> Dict[str, str]:
-    """
-    Submit a 5-star review for unlimited free access.
-    
-    Args:
-        review: ReviewSubmission with rating and text (300+ words)
-        
-    Returns:
-        Success message
-        
-    Raises:
-        HTTPException: If review doesn't meet requirements
-    """
+    """Submit a 5-star review for unlimited free access."""
     try:
-        # Validate review
         if review.rating != 5:
             raise HTTPException(status_code=400, detail="Only 5-star reviews qualify for free access")
         
         word_count = len(review.review_text.split())
         if word_count < 300:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Review must be at least 300 words. Current: {word_count} words"
-            )
+            raise HTTPException(status_code=400, detail=f"Review must be at least 300 words. Current: {word_count} words")
         
-        # Update user access
         await db.user_access.update_one(
             {"session_id": review.session_id},
-            {
-                "$set": {
-                    "has_reviewed": True,
-                    "review_text": review.review_text
-                }
-            },
+            {"$set": {"has_reviewed": True, "review_text": review.review_text}},
             upsert=True
         )
         
-        # Store review
         review_doc = {
             "session_id": review.session_id,
             "rating": review.rating,
@@ -272,16 +262,72 @@ async def submit_review(review: ReviewSubmission) -> Dict[str, str]:
         }
         await db.reviews.insert_one(review_doc)
         
-        return {
-            "status": "success",
-            "message": "Thank you! You now have unlimited free access to DROP!"
-        }
-        
+        return {"status": "success", "message": "Thank you! You now have unlimited free access to YLA!"}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error processing review: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing review: {str(e)}")
+
+
+@api_router.post("/payment/create")
+async def create_payment(payment_req: PaymentRequest) -> Dict[str, Any]:
+    """Create PayPal payment for YLA."""
+    try:
+        if payment_req.plan_type == "lifetime":
+            payment = paypalrestsdk.Payment({
+                "intent": "sale",
+                "payer": {"payment_method": "paypal"},
+                "redirect_urls": {
+                    "return_url": f"{os.environ.get('FRONTEND_URL', 'http://localhost:3000')}/payment/success",
+                    "cancel_url": f"{os.environ.get('FRONTEND_URL', 'http://localhost:3000')}/payment/cancel"
+                },
+                "transactions": [{
+                    "amount": {"total": "300.00", "currency": "USD"},
+                    "description": "YLA - Your Last Assistant (Lifetime Access)"
+                }]
+            })
+        else:  # subscription
+            payment = paypalrestsdk.Payment({
+                "intent": "sale",
+                "payer": {"payment_method": "paypal"},
+                "redirect_urls": {
+                    "return_url": f"{os.environ.get('FRONTEND_URL', 'http://localhost:3000')}/payment/success",
+                    "cancel_url": f"{os.environ.get('FRONTEND_URL', 'http://localhost:3000')}/payment/cancel"
+                },
+                "transactions": [{
+                    "amount": {"total": "50.00", "currency": "USD"},
+                    "description": "YLA - Your Last Assistant (Initial Deposit)"
+                }]
+            })
+
+        if payment.create():
+            approval_url = next(link.href for link in payment.links if link.rel == "approval_url")
+            return {"status": "created", "approval_url": approval_url, "payment_id": payment.id}
+        else:
+            raise HTTPException(status_code=400, detail=payment.error)
+    except Exception as e:
+        logger.error(f"Payment creation error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/payment/execute")
+async def execute_payment(payment_id: str, payer_id: str, session_id: str) -> Dict[str, str]:
+    """Execute PayPal payment after approval."""
+    try:
+        payment = paypalrestsdk.Payment.find(payment_id)
+        if payment.execute({"payer_id": payer_id}):
+            await db.user_access.update_one(
+                {"session_id": session_id},
+                {"$set": {"has_paid": True, "payment_id": payment_id}},
+                upsert=True
+            )
+            return {"status": "success", "message": "Payment successful! Welcome to YLA lifetime access!"}
+        else:
+            raise HTTPException(status_code=400, detail=payment.error)
+    except Exception as e:
+        logger.error(f"Payment execution error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @api_router.post("/chat", response_model=ChatResponse)
