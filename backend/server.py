@@ -9,8 +9,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Dict, Any
 import uuid
 from datetime import datetime, timezone
-from emergentintegrations.llm.chat import LlmChat, UserMessage
-import paypalrestsdk
+from openai import AsyncOpenAI
 
 
 ROOT_DIR = Path(__file__).parent
@@ -20,6 +19,9 @@ load_dotenv(ROOT_DIR / '.env')
 mongo_url: str = os.environ['MONGO_URL']
 client: AsyncIOMotorClient = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
+
+# OpenAI client
+openai_client = AsyncOpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
 
 # PayPal configuration
 paypalrestsdk.configure({
