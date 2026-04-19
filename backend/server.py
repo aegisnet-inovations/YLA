@@ -1,15 +1,17 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Dict, Any
+from pydantic import BaseModel, Field, ConfigDict, EmailStr
+from typing import List, Dict, Any, Optional
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from openai import AsyncOpenAI
+import bcrypt
+import jwt as pyjwt
 
 
 ROOT_DIR = Path(__file__).parent
@@ -77,9 +79,74 @@ class ChatHistory(BaseModel):
 
 class AccessStatus(BaseModel):
     has_access: bool
-    access_type: str  # "trial", "review", "paid", "expired"
+    access_type: str  # "trial", "review", "paid", "expired", "owner"
     time_remaining: str = ""
     message: str
+
+
+class AdminLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class AdminLoginResponse(BaseModel):
+    token: str
+    email: str
+
+
+# ---------- Auth helpers ----------
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRY_HOURS = 24 * 30  # 30 days for owner convenience
+
+
+def _jwt_secret() -> str:
+    return os.environ["JWT_SECRET"]
+
+
+def hash_password(pw: str) -> str:
+    return bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(pw: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(pw.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
+
+
+def create_admin_token(email: str) -> str:
+    payload = {
+        "sub": email,
+        "role": "admin",
+        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRY_HOURS),
+    }
+    return pyjwt.encode(payload, _jwt_secret(), algorithm=JWT_ALGORITHM)
+
+
+def decode_token(token: str) -> Optional[dict]:
+    try:
+        return pyjwt.decode(token, _jwt_secret(), algorithms=[JWT_ALGORITHM])
+    except Exception:
+        return None
+
+
+async def require_admin(request: Request) -> dict:
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:] if auth.startswith("Bearer ") else None
+    payload = decode_token(token) if token else None
+    if not payload or payload.get("role") != "admin":
+        raise HTTPException(status_code=401, detail="Admin authentication required")
+    return payload
+
+
+async def is_owner_token(request: Request) -> bool:
+    """Non-raising check for owner JWT on any request (used by chat endpoint)."""
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:] if auth.startswith("Bearer ") else None
+    if not token:
+        return False
+    payload = decode_token(token)
+    return bool(payload and payload.get("role") == "admin")
 
 
 # ---------- Helpers ----------
@@ -203,15 +270,24 @@ async def root():
 
 
 @api_router.get("/access/{session_id}", response_model=AccessStatus)
-async def get_access(session_id: str):
+async def get_access(session_id: str, request: Request):
+    if await is_owner_token(request):
+        return AccessStatus(
+            has_access=True,
+            access_type="owner",
+            time_remaining="",
+            message="Owner access — unlimited",
+        )
     return await check_user_access(session_id)
 
 
 @api_router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
-    status = await check_user_access(req.session_id)
-    if not status.has_access:
-        raise HTTPException(status_code=402, detail=status.message)
+async def chat(req: ChatRequest, request: Request):
+    owner = await is_owner_token(request)
+    if not owner:
+        status = await check_user_access(req.session_id)
+        if not status.has_access:
+            raise HTTPException(status_code=402, detail=status.message)
 
     # Save user message
     user_msg = ChatMessage(
@@ -283,6 +359,88 @@ async def submit_review(review: ReviewSubmission):
         upsert=True,
     )
     return {"status": "success", "message": "Lifetime FREE access granted!"}
+
+
+# ---------- Admin routes ----------
+@api_router.post("/admin/login", response_model=AdminLoginResponse)
+async def admin_login(req: AdminLoginRequest):
+    email = req.email.strip().lower()
+    admin = await db.admins.find_one({"email": email}, {"_id": 0})
+    if not admin or not verify_password(req.password, admin["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    return AdminLoginResponse(token=create_admin_token(email), email=email)
+
+
+@api_router.get("/admin/me")
+async def admin_me(admin=Depends(require_admin)):
+    return {"email": admin.get("sub"), "role": admin.get("role")}
+
+
+@api_router.get("/admin/stats")
+async def admin_stats(admin=Depends(require_admin)):
+    total_users = await db.user_access.count_documents({})
+    paid = await db.user_access.count_documents({"has_paid": True})
+    reviewed = await db.user_access.count_documents({"has_reviewed": True})
+    total_messages = await db.chat_messages.count_documents({})
+    return {
+        "total_users": total_users,
+        "paid_users": paid,
+        "reviewed_users": reviewed,
+        "total_messages": total_messages,
+    }
+
+
+@api_router.get("/admin/users")
+async def admin_users(admin=Depends(require_admin)):
+    cursor = db.user_access.find({}, {"_id": 0}).sort("trial_start", -1)
+    users = await cursor.to_list(length=1000)
+    # compute trial status for each
+    now = datetime.now(timezone.utc)
+    for u in users:
+        try:
+            ts = datetime.fromisoformat(u["trial_start"])
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            hours = (now - ts).total_seconds() / 3600
+            u["hours_since_start"] = round(hours, 1)
+            u["trial_expired"] = hours > 24 and not (u.get("has_paid") or u.get("has_reviewed"))
+        except Exception:
+            u["hours_since_start"] = None
+            u["trial_expired"] = False
+    return {"users": users, "count": len(users)}
+
+
+@api_router.get("/admin/reviews")
+async def admin_reviews(admin=Depends(require_admin)):
+    cursor = db.user_access.find(
+        {"has_reviewed": True}, {"_id": 0}
+    ).sort("trial_start", -1)
+    reviews = await cursor.to_list(length=1000)
+    return {"reviews": reviews, "count": len(reviews)}
+
+
+# ---------- Startup: seed admin ----------
+@app.on_event("startup")
+async def seed_admin_on_startup():
+    admin_email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+    admin_password = os.environ.get("ADMIN_PASSWORD", "")
+    if not admin_email or not admin_password:
+        logger.warning("ADMIN_EMAIL/ADMIN_PASSWORD not set; skipping admin seed")
+        return
+    existing = await db.admins.find_one({"email": admin_email})
+    if existing is None:
+        await db.admins.insert_one({
+            "email": admin_email,
+            "password_hash": hash_password(admin_password),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info(f"Seeded admin: {admin_email}")
+    elif not verify_password(admin_password, existing["password_hash"]):
+        await db.admins.update_one(
+            {"email": admin_email},
+            {"$set": {"password_hash": hash_password(admin_password)}},
+        )
+        logger.info(f"Updated admin password: {admin_email}")
 
 
 # Register router and CORS

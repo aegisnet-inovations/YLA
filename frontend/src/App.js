@@ -1,15 +1,17 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import '@/App.css';
 import axios from 'axios';
-import { Trash2, Sparkles, Code, Search, Clock, Star, HelpCircle } from 'lucide-react';
+import { Trash2, Sparkles, Code, Search, Clock, Star, HelpCircle, Shield } from 'lucide-react';
 import ChatMessage from '@/components/ChatMessage';
 import ChatInput from '@/components/ChatInput';
 import WelcomeScreen from '@/components/WelcomeScreen';
 import ReviewModal from '@/components/ReviewModal';
 import HowToUse from '@/components/HowToUse';
+import AdminPage from '@/components/AdminPage';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+const ADMIN_TOKEN_KEY = 'yla_admin_token';
 
 // Helper function to generate UUID
 const generateUUID = () => {
@@ -18,6 +20,11 @@ const generateUUID = () => {
     const v = c === 'x' ? r : (r & 0x3 | 0x8);
     return v.toString(16);
   });
+};
+
+const getAuthHeader = () => {
+  const t = localStorage.getItem(ADMIN_TOKEN_KEY);
+  return t ? { Authorization: `Bearer ${t}` } : {};
 };
 
 function App() {
@@ -48,7 +55,7 @@ function App() {
   // Check access status
   const checkAccess = useCallback(async (sid) => {
     try {
-      const response = await axios.get(`${API}/access/${sid}`);
+      const response = await axios.get(`${API}/access/${sid}`, { headers: getAuthHeader() });
       setAccessStatus(response.data);
     } catch (error) {
       console.error('Error checking access:', error);
@@ -100,7 +107,7 @@ function App() {
       const response = await axios.post(`${API}/chat`, {
         message: inputMessage,
         session_id: sessionId
-      });
+      }, { headers: getAuthHeader() });
 
       const assistantMessage = {
         id: response.data.message_id,
@@ -153,14 +160,15 @@ function App() {
               alignItems: 'center', 
               gap: '0.5rem',
               padding: '0.5rem 1rem',
-              background: accessStatus.has_access ? '#10b981' : '#ef4444',
+              background: accessStatus.access_type === 'owner' ? '#111827' : (accessStatus.has_access ? '#10b981' : '#ef4444'),
               color: 'white',
               borderRadius: '20px',
               fontSize: '0.875rem'
             }}>
+              {accessStatus.access_type === 'owner' && <Shield size={16} />}
               {accessStatus.access_type === 'trial' && <Clock size={16} />}
               {accessStatus.access_type === 'review' && <Star size={16} fill="white" />}
-              <span>{accessStatus.time_remaining || accessStatus.access_type.toUpperCase()}</span>
+              <span>{accessStatus.access_type === 'owner' ? 'OWNER' : (accessStatus.time_remaining || accessStatus.access_type.toUpperCase())}</span>
               {/* Only show offer button after 12 hours */}
               {accessStatus.access_type === 'trial' && accessStatus.message.includes('SPECIAL OFFER') && (
                 <button
