@@ -90,13 +90,14 @@ class AdminLoginRequest(BaseModel):
 
 
 class AdminLoginResponse(BaseModel):
-    token: str
     email: str
 
 
 # ---------- Auth helpers ----------
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24 * 30  # 30 days for owner convenience
+ADMIN_COOKIE_NAME = "yla_admin_token"
+ADMIN_COOKIE_MAX_AGE = JWT_EXPIRY_HOURS * 3600
 
 
 def _jwt_secret() -> str:
@@ -130,9 +131,19 @@ def decode_token(token: str) -> Optional[dict]:
         return None
 
 
-async def require_admin(request: Request) -> dict:
+def _extract_token(request: Request) -> Optional[str]:
+    # Prefer httpOnly cookie; fall back to Authorization: Bearer for API clients.
+    cookie = request.cookies.get(ADMIN_COOKIE_NAME)
+    if cookie:
+        return cookie
     auth = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.startswith("Bearer ") else None
+    if auth.startswith("Bearer "):
+        return auth[7:]
+    return None
+
+
+async def require_admin(request: Request) -> dict:
+    token = _extract_token(request)
     payload = decode_token(token) if token else None
     if not payload or payload.get("role") != "admin":
         raise HTTPException(status_code=401, detail="Admin authentication required")
@@ -141,8 +152,7 @@ async def require_admin(request: Request) -> dict:
 
 async def is_owner_token(request: Request) -> bool:
     """Non-raising check for owner JWT on any request (used by chat endpoint)."""
-    auth = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.startswith("Bearer ") else None
+    token = _extract_token(request)
     if not token:
         return False
     payload = decode_token(token)
@@ -363,12 +373,28 @@ async def submit_review(review: ReviewSubmission):
 
 # ---------- Admin routes ----------
 @api_router.post("/admin/login", response_model=AdminLoginResponse)
-async def admin_login(req: AdminLoginRequest):
+async def admin_login(req: AdminLoginRequest, response: Response):
     email = req.email.strip().lower()
     admin = await db.admins.find_one({"email": email}, {"_id": 0})
     if not admin or not verify_password(req.password, admin["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    return AdminLoginResponse(token=create_admin_token(email), email=email)
+    token = create_admin_token(email)
+    response.set_cookie(
+        key=ADMIN_COOKIE_NAME,
+        value=token,
+        max_age=ADMIN_COOKIE_MAX_AGE,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return AdminLoginResponse(email=email)
+
+
+@api_router.post("/admin/logout")
+async def admin_logout(response: Response):
+    response.delete_cookie(ADMIN_COOKIE_NAME, path="/")
+    return {"status": "ok"}
 
 
 @api_router.get("/admin/me")

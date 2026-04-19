@@ -4,7 +4,9 @@ import { LogOut, Users, Star, MessageSquare, DollarSign, RefreshCw } from 'lucid
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
-const TOKEN_KEY = 'yla_admin_token';
+
+// All admin calls use cookies; no token stored in JS.
+const adminAxios = axios.create({ baseURL: API, withCredentials: true });
 
 const card = {
   background: 'white',
@@ -25,9 +27,8 @@ function LoginForm({ onLogin }) {
     setBusy(true);
     setError('');
     try {
-      const { data } = await axios.post(`${API}/admin/login`, { email, password });
-      localStorage.setItem(TOKEN_KEY, data.token);
-      onLogin(data.token);
+      await adminAxios.post('/admin/login', { email, password });
+      onLogin();
     } catch (err) {
       setError(err.response?.data?.detail || 'Login failed');
     } finally {
@@ -104,22 +105,20 @@ function Stat({ icon: Icon, label, value, color }) {
   );
 }
 
-function Dashboard({ token, onLogout }) {
+function Dashboard({ onLogout }) {
   const [stats, setStats] = useState(null);
   const [users, setUsers] = useState([]);
   const [reviews, setReviews] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('users');
 
-  const auth = { headers: { Authorization: `Bearer ${token}` } };
-
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const [s, u, r] = await Promise.all([
-        axios.get(`${API}/admin/stats`, auth),
-        axios.get(`${API}/admin/users`, auth),
-        axios.get(`${API}/admin/reviews`, auth),
+        adminAxios.get('/admin/stats'),
+        adminAxios.get('/admin/users'),
+        adminAxios.get('/admin/reviews'),
       ]);
       setStats(s.data);
       setUsers(u.data.users);
@@ -129,10 +128,14 @@ function Dashboard({ token, onLogout }) {
     } finally {
       setLoading(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+  }, [onLogout]);
 
   useEffect(() => { load(); }, [load]);
+
+  const handleLogout = async () => {
+    try { await adminAxios.post('/admin/logout'); } catch { /* noop */ }
+    onLogout();
+  };
 
   return (
     <div style={{ minHeight: '100vh', background: '#f9fafb' }}>
@@ -160,7 +163,7 @@ function Dashboard({ token, onLogout }) {
           </a>
           <button
             data-testid="admin-logout"
-            onClick={onLogout}
+            onClick={handleLogout}
             style={{ padding: '0.5rem 1rem', background: '#ef4444', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
           >
             <LogOut size={16} /> Logout
@@ -254,13 +257,25 @@ function Dashboard({ token, onLogout }) {
 }
 
 export default function AdminPage() {
-  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY));
+  // null = still checking session, true = authed, false = not authed
+  const [authed, setAuthed] = useState(null);
 
-  const logout = () => {
-    localStorage.removeItem(TOKEN_KEY);
-    setToken(null);
-  };
+  useEffect(() => {
+    let cancelled = false;
+    adminAxios.get('/admin/me')
+      .then(() => { if (!cancelled) setAuthed(true); })
+      .catch(() => { if (!cancelled) setAuthed(false); });
+    return () => { cancelled = true; };
+  }, []);
 
-  if (!token) return <LoginForm onLogin={setToken} />;
-  return <Dashboard token={token} onLogout={logout} />;
+  if (authed === null) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', color: 'white' }}>
+        Loading…
+      </div>
+    );
+  }
+
+  if (!authed) return <LoginForm onLogin={() => setAuthed(true)} />;
+  return <Dashboard onLogout={() => setAuthed(false)} />;
 }
