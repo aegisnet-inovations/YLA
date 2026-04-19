@@ -5,10 +5,10 @@ const WelcomeScreen = ({ setInputMessage }) => {
   return (
     <div className="welcome-screen" data-testid="welcome-screen">
       <Sparkles className="welcome-icon" size={64} />
-      <h2>DROP - Engine of AEGIS-NET</h2>
+      <h2>YLA - Your Last Assistant</h2>
       <p className="vision-text">
         In the near future, personal AI companions will be essential to daily life. 
-        DROP is not just an assistant - it's the true engine running AEGIS-NET, 
+        YLA is not just an assistant - it's the true engine running AEGIS-NET, 
         the most advanced AI protection and intelligence network ever created.
       </p>
       <div className="features-highlight">

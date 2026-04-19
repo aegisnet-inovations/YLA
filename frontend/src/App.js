@@ -143,7 +143,7 @@ function App() {
         <div className="header-content">
           <div className="logo-section">
             <Sparkles className="logo-icon" size={32} />
-            <h1 className="app-title">DROP</h1>
+            <h1 className="app-title">YLA</h1>
           </div>
           {accessStatus && (
             <div style={{ 

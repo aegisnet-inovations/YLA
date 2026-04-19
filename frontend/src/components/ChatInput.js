@@ -37,7 +37,7 @@ const ChatInput = ({
         </button>
       </div>
       <div className="input-footer">
-        <span className="powered-by">DROP • Always Running in the Background</span>
+        <span className="powered-by">YLA • Your Last Assistant • Always Running</span>
       </div>
     </div>
   );
