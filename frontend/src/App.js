@@ -256,6 +256,10 @@ function App() {
           onClose={() => setShowReviewModal(false)}
         />
       )}
+      
+      {showHowTo && (
+        <HowToUse onClose={() => setShowHowTo(false)} />
+      )}
     </div>
   );
 }
