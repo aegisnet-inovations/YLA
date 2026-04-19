@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import '@/App.css';
 import axios from 'axios';
-import { Trash2, Sparkles, Code, Search, Clock, Star } from 'lucide-react';
+import { Trash2, Sparkles, Code, Search, Clock, Star, HelpCircle } from 'lucide-react';
 import ChatMessage from '@/components/ChatMessage';
 import ChatInput from '@/components/ChatInput';
 import WelcomeScreen from '@/components/WelcomeScreen';
 import ReviewModal from '@/components/ReviewModal';
+import HowToUse from '@/components/HowToUse';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -26,6 +27,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [accessStatus, setAccessStatus] = useState(null);
   const [showReviewModal, setShowReviewModal] = useState(false);
+  const [showHowTo, setShowHowTo] = useState(false);
   const messagesEndRef = useRef(null);
 
   // Memoized scroll function
@@ -190,6 +192,14 @@ function App() {
               <span>Fort Knox Security</span>
             </div>
           </div>
+          <button 
+            onClick={() => setShowHowTo(true)}
+            className="clear-button"
+            style={{ background: '#667eea', marginRight: '0.5rem' }}
+            title="How to use YLA"
+          >
+            <HelpCircle size={20} />
+          </button>
           <button 
             onClick={clearChat} 
             className="clear-button"
