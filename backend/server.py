@@ -178,12 +178,12 @@ async def save_message_to_db(message: ChatMessage) -> None:
 
 async def load_history(session_id: str, limit: int = 20) -> List[Dict[str, str]]:
     """Load recent history in OpenAI message format."""
-    cursor = db.chat_messages.find(
-        {"session_id": session_id}, {"_id": 0}
-    ).sort("timestamp", 1)
-    msgs = await cursor.to_list(length=1000)
-    # Keep only last `limit` to control prompt size
-    msgs = msgs[-limit:]
+    cursor = (
+        db.chat_messages.find({"session_id": session_id}, {"_id": 0})
+        .sort("timestamp", 1)
+        .limit(limit)
+    )
+    msgs = await cursor.to_list(length=limit)
     return [{"role": m["role"], "content": m["content"]} for m in msgs]
 
 
@@ -322,8 +322,12 @@ async def chat(req: ChatRequest, request: Request):
 
 @api_router.get("/chat/history/{session_id}", response_model=ChatHistory)
 async def get_history(session_id: str):
-    cursor = db.chat_messages.find({"session_id": session_id}, {"_id": 0}).sort("timestamp", 1)
-    raw = await cursor.to_list(length=10000)
+    cursor = (
+        db.chat_messages.find({"session_id": session_id}, {"_id": 0})
+        .sort("timestamp", 1)
+        .limit(500)
+    )
+    raw = await cursor.to_list(length=500)
     messages: List[ChatMessage] = []
     for m in raw:
         ts = m.get("timestamp")
