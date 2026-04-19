@@ -10,6 +10,9 @@ from typing import List, Dict, Any
 import uuid
 from datetime import datetime, timezone
 from openai import AsyncOpenAI
+
+
+ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
@@ -19,13 +22,6 @@ db = client[os.environ['DB_NAME']]
 
 # OpenAI client
 openai_client = AsyncOpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
-
-# PayPal configuration
-paypalrestsdk.configure({
-    "mode": os.environ.get('PAYPAL_MODE', 'sandbox'),
-    "client_id": os.environ.get('PAYPAL_CLIENT_ID'),
-    "client_secret": os.environ.get('PAYPAL_CLIENT_SECRET')
-})
 
 # Create the main app without a prefix
 app = FastAPI()
