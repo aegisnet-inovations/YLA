@@ -8,6 +8,7 @@ import WelcomeScreen from '@/components/WelcomeScreen';
 import ReviewModal from '@/components/ReviewModal';
 import HowToUse from '@/components/HowToUse';
 import AdminPage from '@/components/AdminPage';
+import EmailGate from '@/components/EmailGate';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -32,6 +33,7 @@ function App() {
   const [accessStatus, setAccessStatus] = useState(null);
   const [showReviewModal, setShowReviewModal] = useState(false);
   const [showHowTo, setShowHowTo] = useState(false);
+  const [emailCaptured, setEmailCaptured] = useState(() => !!localStorage.getItem('yla_email'));
   const messagesEndRef = useRef(null);
 
   // Memoized scroll function
@@ -141,8 +143,20 @@ function App() {
     }
   };
 
+  const showEmailGate =
+    sessionId &&
+    !emailCaptured &&
+    accessStatus &&
+    accessStatus.access_type !== 'owner';
+
   return (
     <div className="app-container">
+      {showEmailGate && (
+        <EmailGate
+          sessionId={sessionId}
+          onComplete={() => setEmailCaptured(true)}
+        />
+      )}
       {/* Header */}
       <div className="header" data-testid="app-header">
         <div className="header-content">

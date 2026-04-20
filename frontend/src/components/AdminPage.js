@@ -16,6 +16,19 @@ const card = {
   border: '1px solid #e5e7eb',
 };
 
+const btnBase = {
+  padding: '0.35rem 0.65rem',
+  fontSize: '0.75rem',
+  fontWeight: 600,
+  border: 'none',
+  borderRadius: 6,
+  cursor: 'pointer',
+  color: 'white',
+};
+const btnGreen = { ...btnBase, background: '#10b981' };
+const btnAmber = { ...btnBase, background: '#f59e0b' };
+const btnRed = { ...btnBase, background: '#ef4444' };
+
 function LoginForm({ onLogin }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -111,6 +124,7 @@ function Dashboard({ onLogout }) {
   const [reviews, setReviews] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('users');
+  const [actionBusy, setActionBusy] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -131,6 +145,18 @@ function Dashboard({ onLogout }) {
   }, [onLogout]);
 
   useEffect(() => { load(); }, [load]);
+
+  const runAction = async (path, session_id) => {
+    setActionBusy(session_id + path);
+    try {
+      await adminAxios.post(path, { session_id });
+      await load();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Action failed');
+    } finally {
+      setActionBusy(null);
+    }
+  };
 
   const handleLogout = async () => {
     try { await adminAxios.post('/admin/logout'); } catch { /* noop */ }
@@ -202,28 +228,72 @@ function Dashboard({ onLogout }) {
                   <table style={{ width: '100%', borderCollapse: 'collapse' }} data-testid="admin-users-table">
                     <thead>
                       <tr style={{ background: '#f9fafb', textAlign: 'left' }}>
-                        <th style={{ padding: '0.75rem', fontSize: '0.8rem', color: '#6b7280', fontWeight: 600 }}>Session ID</th>
-                        <th style={{ padding: '0.75rem', fontSize: '0.8rem', color: '#6b7280', fontWeight: 600 }}>Trial Start</th>
+                        <th style={{ padding: '0.75rem', fontSize: '0.8rem', color: '#6b7280', fontWeight: 600 }}>Email</th>
+                        <th style={{ padding: '0.75rem', fontSize: '0.8rem', color: '#6b7280', fontWeight: 600 }}>Started</th>
                         <th style={{ padding: '0.75rem', fontSize: '0.8rem', color: '#6b7280', fontWeight: 600 }}>Hours</th>
                         <th style={{ padding: '0.75rem', fontSize: '0.8rem', color: '#6b7280', fontWeight: 600 }}>Status</th>
+                        <th style={{ padding: '0.75rem', fontSize: '0.8rem', color: '#6b7280', fontWeight: 600 }}>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {users.map((u) => (
-                        <tr key={u.session_id} style={{ borderTop: '1px solid #e5e7eb' }}>
-                          <td style={{ padding: '0.75rem', fontFamily: 'monospace', fontSize: '0.8rem' }}>{u.session_id.slice(0, 16)}…</td>
-                          <td style={{ padding: '0.75rem', fontSize: '0.85rem' }}>{u.trial_start?.slice(0, 16).replace('T', ' ')}</td>
-                          <td style={{ padding: '0.75rem', fontSize: '0.85rem' }}>{u.hours_since_start ?? '—'}h</td>
-                          <td style={{ padding: '0.75rem' }}>
-                            {u.has_paid ? <span style={{ color: '#10b981', fontWeight: 600 }}>Paid</span>
-                              : u.has_reviewed ? <span style={{ color: '#f59e0b', fontWeight: 600 }}>Reviewed</span>
-                              : u.trial_expired ? <span style={{ color: '#ef4444', fontWeight: 600 }}>Expired</span>
-                              : <span style={{ color: '#6b7280' }}>Trial</span>}
-                          </td>
-                        </tr>
-                      ))}
+                      {users.map((u) => {
+                        const busyKey = (p) => actionBusy === u.session_id + p;
+                        return (
+                          <tr key={u.session_id} style={{ borderTop: '1px solid #e5e7eb' }}>
+                            <td style={{ padding: '0.75rem', fontSize: '0.85rem' }}>
+                              {u.email ? (
+                                <a href={`mailto:${u.email}`} style={{ color: '#667eea', textDecoration: 'none', fontWeight: 500 }}>
+                                  {u.email}
+                                </a>
+                              ) : (
+                                <span style={{ color: '#9ca3af', fontStyle: 'italic' }}>(anonymous)</span>
+                              )}
+                            </td>
+                            <td style={{ padding: '0.75rem', fontSize: '0.85rem' }}>{u.trial_start?.slice(0, 16).replace('T', ' ')}</td>
+                            <td style={{ padding: '0.75rem', fontSize: '0.85rem' }}>{u.hours_since_start ?? '—'}h</td>
+                            <td style={{ padding: '0.75rem' }}>
+                              {u.has_paid ? <span style={{ color: '#10b981', fontWeight: 600 }}>Paid</span>
+                                : u.has_reviewed ? <span style={{ color: '#f59e0b', fontWeight: 600 }}>Lifetime</span>
+                                : u.trial_expired ? <span style={{ color: '#ef4444', fontWeight: 600 }}>Expired</span>
+                                : <span style={{ color: '#6b7280' }}>Trial</span>}
+                            </td>
+                            <td style={{ padding: '0.75rem' }}>
+                              <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+                                {!u.has_paid && (
+                                  <button
+                                    data-testid={`action-mark-paid-${u.session_id}`}
+                                    disabled={busyKey('/admin/users/mark-paid')}
+                                    onClick={() => runAction('/admin/users/mark-paid', u.session_id)}
+                                    style={btnGreen}
+                                  >{busyKey('/admin/users/mark-paid') ? '…' : 'Mark Paid'}</button>
+                                )}
+                                {!u.has_reviewed && !u.has_paid && (
+                                  <button
+                                    data-testid={`action-grant-${u.session_id}`}
+                                    disabled={busyKey('/admin/users/grant-lifetime')}
+                                    onClick={() => runAction('/admin/users/grant-lifetime', u.session_id)}
+                                    style={btnAmber}
+                                  >{busyKey('/admin/users/grant-lifetime') ? '…' : 'Grant'}</button>
+                                )}
+                                {(u.has_paid || u.has_reviewed) && (
+                                  <button
+                                    data-testid={`action-revoke-${u.session_id}`}
+                                    disabled={busyKey('/admin/users/revoke')}
+                                    onClick={() => {
+                                      if (window.confirm(`Revoke access for ${u.email || u.session_id.slice(0, 8)}?`)) {
+                                        runAction('/admin/users/revoke', u.session_id);
+                                      }
+                                    }}
+                                    style={btnRed}
+                                  >{busyKey('/admin/users/revoke') ? '…' : 'Revoke'}</button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                       {users.length === 0 && (
-                        <tr><td colSpan={4} style={{ padding: '2rem', textAlign: 'center', color: '#9ca3af' }}>No users yet</td></tr>
+                        <tr><td colSpan={5} style={{ padding: '2rem', textAlign: 'center', color: '#9ca3af' }}>No users yet</td></tr>
                       )}
                     </tbody>
                   </table>
@@ -241,7 +311,12 @@ function Dashboard({ onLogout }) {
                       ))}
                     </div>
                     <p style={{ color: '#374151', whiteSpace: 'pre-wrap', margin: 0 }}>{r.review_text}</p>
-                    <p style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.5rem' }}>Session: {r.session_id.slice(0, 12)}…</p>
+                    <p style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.5rem' }}>
+                      {r.email ? (
+                        <a href={`mailto:${r.email}`} style={{ color: '#667eea', textDecoration: 'none' }}>{r.email}</a>
+                      ) : 'Anonymous'}
+                      {' • '}Session: {r.session_id.slice(0, 12)}…
+                    </p>
                   </div>
                 ))}
                 {reviews.length === 0 && (

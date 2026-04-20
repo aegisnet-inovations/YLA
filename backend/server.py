@@ -50,10 +50,20 @@ class UserAccess(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     session_id: str
+    email: str = ""
     trial_start: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     has_reviewed: bool = False
     has_paid: bool = False
     review_text: str = ""
+
+
+class EmailRegisterRequest(BaseModel):
+    session_id: str
+    email: str
+
+
+class AdminUserAction(BaseModel):
+    session_id: str
 
 
 class ReviewSubmission(BaseModel):
@@ -279,6 +289,29 @@ async def root():
     return {"name": "YLA", "status": "ok"}
 
 
+@api_router.post("/register-email")
+async def register_email(req: EmailRegisterRequest):
+    """Attach an email to a session. Creates the trial row if missing."""
+    email = req.email.strip().lower()
+    if "@" not in email or len(email) < 5:
+        raise HTTPException(status_code=400, detail="Invalid email")
+    await db.user_access.update_one(
+        {"session_id": req.session_id},
+        {
+            "$set": {"email": email},
+            "$setOnInsert": {
+                "session_id": req.session_id,
+                "trial_start": datetime.now(timezone.utc).isoformat(),
+                "has_paid": False,
+                "has_reviewed": False,
+                "review_text": "",
+            },
+        },
+        upsert=True,
+    )
+    return {"status": "ok", "email": email}
+
+
 @api_router.get("/access/{session_id}", response_model=AccessStatus)
 async def get_access(session_id: str, request: Request):
     if await is_owner_token(request):
@@ -447,6 +480,52 @@ async def admin_reviews(admin=Depends(require_admin)):
     ).sort("trial_start", -1)
     reviews = await cursor.to_list(length=1000)
     return {"reviews": reviews, "count": len(reviews)}
+
+
+@api_router.post("/admin/users/mark-paid")
+async def admin_mark_paid(action: AdminUserAction, admin=Depends(require_admin)):
+    result = await db.user_access.update_one(
+        {"session_id": action.session_id},
+        {"$set": {"has_paid": True}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"status": "ok", "session_id": action.session_id, "has_paid": True}
+
+
+@api_router.post("/admin/users/grant-lifetime")
+async def admin_grant_lifetime(action: AdminUserAction, admin=Depends(require_admin)):
+    """Grant lifetime free access (marks as reviewed without requiring a review)."""
+    result = await db.user_access.update_one(
+        {"session_id": action.session_id},
+        {
+            "$set": {
+                "has_reviewed": True,
+                "review_text": "[Granted by admin]",
+            }
+        },
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"status": "ok", "session_id": action.session_id, "granted": True}
+
+
+@api_router.post("/admin/users/revoke")
+async def admin_revoke(action: AdminUserAction, admin=Depends(require_admin)):
+    """Revoke paid + granted flags (user falls back to trial / expired)."""
+    result = await db.user_access.update_one(
+        {"session_id": action.session_id},
+        {
+            "$set": {
+                "has_paid": False,
+                "has_reviewed": False,
+                "review_text": "",
+            }
+        },
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"status": "ok", "session_id": action.session_id, "revoked": True}
 
 
 # ---------- Startup: seed admin ----------
