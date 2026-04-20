@@ -355,6 +355,46 @@ function App() {
         </div>
       )}
 
+      {accessStatus?.is_returning && accessStatus?.discount_percent > 0 && (
+        <div
+          data-testid="comeback-banner"
+          onClick={() => setShowReviewModal(true)}
+          style={{
+            cursor: 'pointer',
+            background: 'linear-gradient(90deg,#10b981 0%,#059669 45%,#0ea5e9 100%)',
+            color: '#fff',
+            padding: '0.85rem 1.25rem',
+            fontSize: '0.95rem',
+            fontWeight: 700,
+            letterSpacing: '0.2px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '0.65rem',
+            boxShadow: '0 4px 20px rgba(16,185,129,0.35)',
+            animation: 'ylaPulse 2.2s ease-in-out infinite',
+            borderBottom: '1px solid rgba(255,255,255,0.15)',
+          }}
+        >
+          <span style={{ fontSize: '1.3rem' }}>🎁</span>
+          <span>
+            Welcome back — <span style={{ textDecoration: 'line-through', opacity: 0.75 }}>$300</span>{' '}
+            <b style={{ color: '#fffbeb' }}>${accessStatus.lifetime_price} Lifetime</b> · 50% OFF ·
+          </span>
+          <span style={{
+            background: '#fff',
+            color: '#059669',
+            padding: '0.2rem 0.7rem',
+            borderRadius: '999px',
+            fontSize: '0.8rem',
+            fontWeight: 800,
+          }}>
+            Ends in {accessStatus.time_remaining}
+          </span>
+          <span style={{ fontSize: '0.85rem', opacity: 0.9 }}>→ Claim</span>
+        </div>
+      )}
+
       {/* Chat Container */}
       <div className="chat-container" data-testid="chat-container">
         {messages.length === 0 ? (
@@ -399,10 +439,14 @@ function App() {
       {showReviewModal && (
         <ReviewModal
           sessionId={sessionId}
+          lifetimePrice={accessStatus?.lifetime_price ?? 300}
+          starterPrice={accessStatus?.starter_price ?? 50}
+          discountPercent={accessStatus?.discount_percent ?? 0}
+          isReturning={!!accessStatus?.is_returning}
           onSuccess={() => {
             setShowReviewModal(false);
             checkAccess(sessionId);
-            alert('🎉 Thank you! You now have unlimited FREE access to DROP!');
+            alert('🎉 Thank you! You now have unlimited FREE access to YLA!');
           }}
           onClose={() => setShowReviewModal(false)}
         />

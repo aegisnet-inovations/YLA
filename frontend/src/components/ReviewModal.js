@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Star, Send } from 'lucide-react';
 
-const ReviewModal = ({ sessionId, onSuccess, onClose, showPaymentOptions }) => {
+const ReviewModal = ({ sessionId, onSuccess, onClose, showPaymentOptions, lifetimePrice = 300, starterPrice = 50, discountPercent = 0, isReturning = false }) => {
   const [rating, setRating] = useState(5);
   const [reviewText, setReviewText] = useState('');
   const [error, setError] = useState('');
@@ -198,17 +198,34 @@ const ReviewModal = ({ sessionId, onSuccess, onClose, showPaymentOptions }) => {
           </>
         ) : (
           <>
+            {isReturning && discountPercent > 0 && (
+              <div
+                data-testid="returning-welcome-badge"
+                style={{
+                  padding: '0.85rem 1rem',
+                  marginBottom: '1rem',
+                  borderRadius: '10px',
+                  background: 'linear-gradient(90deg,#10b981,#0ea5e9)',
+                  color: '#fff',
+                  textAlign: 'center',
+                  fontWeight: 700,
+                  boxShadow: '0 4px 14px rgba(16,185,129,0.35)',
+                }}
+              >
+                🎁 Welcome back — {discountPercent}% OFF Lifetime auto-applied
+              </div>
+            )}
             <div style={{ marginBottom: '1.5rem' }}>
               <h3 style={{ marginBottom: '1rem' }}>Payment Options:</h3>
-              
-              <div style={{ 
-                padding: '1rem', 
+
+              <div style={{
+                padding: '1rem',
                 border: '2px solid #667eea',
                 borderRadius: '8px',
                 marginBottom: '1rem'
               }}>
                 <h4>💳 Option 1: Starter Deposit</h4>
-                <p><strong>$50 deposit</strong> — unlocks access immediately</p>
+                <p><strong>${starterPrice} deposit</strong> — unlocks access immediately</p>
                 <p style={{ fontSize: '0.875rem', color: '#666' }}>Monthly $10 continuation managed separately.</p>
                 <button
                   data-testid="pay-starter-btn"
@@ -227,18 +244,43 @@ const ReviewModal = ({ sessionId, onSuccess, onClose, showPaymentOptions }) => {
                     opacity: payBusy ? 0.6 : 1,
                   }}
                 >
-                  {payBusy === 'starter' ? 'Redirecting…' : 'Pay $50 with Stripe'}
+                  {payBusy === 'starter' ? 'Redirecting…' : `Pay $${starterPrice} with Stripe`}
                 </button>
               </div>
 
-              <div style={{ 
-                padding: '1rem', 
+              <div style={{
+                padding: '1rem',
                 border: '2px solid #10b981',
                 borderRadius: '8px',
-                marginBottom: '1rem'
+                marginBottom: '1rem',
+                position: 'relative',
               }}>
+                {discountPercent > 0 && (
+                  <span style={{
+                    position: 'absolute',
+                    top: '-10px',
+                    right: '12px',
+                    background: '#ef4444',
+                    color: '#fff',
+                    fontSize: '0.7rem',
+                    fontWeight: 800,
+                    letterSpacing: '1px',
+                    padding: '0.25rem 0.6rem',
+                    borderRadius: '999px',
+                    boxShadow: '0 2px 8px rgba(239,68,68,0.45)',
+                  }}>-{discountPercent}%</span>
+                )}
                 <h4>💎 Option 2: Lifetime (Best Value!)</h4>
-                <p><strong>$300 one-time payment</strong></p>
+                <p>
+                  {discountPercent > 0 ? (
+                    <>
+                      <s style={{ color: '#9ca3af' }}>$300</s>{' '}
+                      <strong style={{ color: '#059669' }}>${lifetimePrice} one-time payment</strong>
+                    </>
+                  ) : (
+                    <strong>${lifetimePrice} one-time payment</strong>
+                  )}
+                </p>
                 <p style={{ fontSize: '0.875rem', color: '#666' }}>Pay once, yours for life</p>
                 <button
                   data-testid="pay-lifetime-btn"
@@ -257,7 +299,7 @@ const ReviewModal = ({ sessionId, onSuccess, onClose, showPaymentOptions }) => {
                     opacity: payBusy ? 0.6 : 1,
                   }}
                 >
-                  {payBusy === 'lifetime' ? 'Redirecting…' : 'Pay $300 with Stripe'}
+                  {payBusy === 'lifetime' ? 'Redirecting…' : `Pay $${lifetimePrice} with Stripe`}
                 </button>
               </div>
 

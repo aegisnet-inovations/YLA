@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { LogOut, Users, Star, MessageSquare, DollarSign, RefreshCw, Brain, Trash2, Plus } from 'lucide-react';
+import { LogOut, Users, Star, MessageSquare, DollarSign, RefreshCw, Brain, Trash2, Plus, Mail, Gift } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -198,6 +198,67 @@ function Dashboard({ onLogout }) {
     }
   };
 
+  const [comebackBusy, setComebackBusy] = useState(false);
+  const [comebackResult, setComebackResult] = useState(null);
+  const [comebackRecipients, setComebackRecipients] = useState(null);
+
+  const loadRecipients = async () => {
+    try {
+      const r = await adminAxios.get('/admin/comeback/recipients');
+      setComebackRecipients(r.data);
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to load recipients');
+    }
+  };
+
+  const runBackfill = async () => {
+    if (!window.confirm('Flag every prior user as "returning" and reset their 24h trial so the 50% OFF Lifetime offer activates for them?')) return;
+    setComebackBusy(true);
+    try {
+      const r = await adminAxios.post('/admin/comeback/backfill');
+      alert(`Backfill complete — ${r.data.flagged} users now eligible for 50% OFF Lifetime.`);
+      await load();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Backfill failed');
+    } finally {
+      setComebackBusy(false);
+    }
+  };
+
+  const sendComebackEmails = async () => {
+    const recipients = comebackRecipients?.count ?? 0;
+    if (recipients === 0) {
+      alert('No recipients. Click "Load Recipients" first.');
+      return;
+    }
+    if (!window.confirm(`Send the "Welcome Back + 50% OFF" email to ${recipients} prior user(s)? This cannot be undone.`)) return;
+    setComebackBusy(true);
+    setComebackResult(null);
+    try {
+      const r = await adminAxios.post('/admin/comeback/send', {
+        origin_url: window.location.origin,
+      });
+      setComebackResult(r.data);
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Send failed');
+    } finally {
+      setComebackBusy(false);
+    }
+  };
+
+  const previewEmail = async () => {
+    try {
+      const r = await adminAxios.get('/admin/comeback/preview');
+      const w = window.open('', '_blank');
+      if (w) {
+        w.document.write(r.data.html);
+        w.document.close();
+      }
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Preview failed');
+    }
+  };
+
   const handleLogout = async () => {
     try { await adminAxios.post('/admin/logout'); } catch { /* noop */ }
     onLogout();
@@ -265,6 +326,11 @@ function Dashboard({ onLogout }) {
                 onClick={() => setTab('memory')}
                 style={{ padding: '0.5rem 1rem', background: tab === 'memory' ? '#667eea' : '#e5e7eb', color: tab === 'memory' ? 'white' : '#374151', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.35rem' }}
               ><Brain size={16} /> Memory ({memory.length})</button>
+              <button
+                data-testid="admin-tab-comeback"
+                onClick={() => setTab('comeback')}
+                style={{ padding: '0.5rem 1rem', background: tab === 'comeback' ? '#667eea' : '#e5e7eb', color: tab === 'comeback' ? 'white' : '#374151', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+              ><Gift size={16} /> Comeback</button>
             </div>
 
             {tab === 'users' && (
@@ -454,6 +520,82 @@ function Dashboard({ onLogout }) {
                     </p>
                   )}
                 </div>
+              </div>
+            )}
+
+            {tab === 'comeback' && (
+              <div data-testid="admin-comeback-panel">
+                <div style={{ ...card, marginBottom: '1rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                    <Gift size={20} color="#10b981" />
+                    <h2 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700 }}>Comeback Campaign — 50% OFF Lifetime</h2>
+                  </div>
+                  <p style={{ color: '#6b7280', fontSize: '0.85rem', margin: '0 0 1rem 0' }}>
+                    Reward every email that has tried YLA. Flagged users see a pulsing welcome-back banner in-app and get <b>50% OFF Lifetime</b> ($300 → $150) auto-applied at Stripe checkout, valid for 24 hours.
+                  </p>
+
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <button
+                      data-testid="comeback-backfill-btn"
+                      onClick={runBackfill}
+                      disabled={comebackBusy}
+                      style={{ ...btnBase, background: '#10b981', padding: '0.65rem 1rem', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.35rem', opacity: comebackBusy ? 0.6 : 1 }}
+                    >
+                      <RefreshCw size={14} /> 1. Flag All Prior Users (Reset Trials)
+                    </button>
+                    <button
+                      data-testid="comeback-load-recipients-btn"
+                      onClick={loadRecipients}
+                      disabled={comebackBusy}
+                      style={{ ...btnBase, background: '#6366f1', padding: '0.65rem 1rem', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                    >
+                      <Users size={14} /> 2. Load Recipients
+                    </button>
+                    <button
+                      data-testid="comeback-preview-btn"
+                      onClick={previewEmail}
+                      style={{ ...btnBase, background: '#f59e0b', padding: '0.65rem 1rem', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                    >
+                      <Mail size={14} /> Preview Email
+                    </button>
+                    <button
+                      data-testid="comeback-send-btn"
+                      onClick={sendComebackEmails}
+                      disabled={comebackBusy || !comebackRecipients}
+                      style={{ ...btnBase, background: '#ef4444', padding: '0.65rem 1rem', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.35rem', opacity: (comebackBusy || !comebackRecipients) ? 0.6 : 1 }}
+                    >
+                      <Mail size={14} /> 3. Send Comeback Email {comebackRecipients ? `(${comebackRecipients.count})` : ''}
+                    </button>
+                  </div>
+
+                  {comebackResult && (
+                    <div style={{ marginTop: '1rem', padding: '0.75rem 1rem', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: '8px', color: '#065f46', fontSize: '0.9rem' }}>
+                      ✅ Sent to {comebackResult.sent} / {comebackResult.total}. Failed: {comebackResult.failed}
+                    </div>
+                  )}
+                </div>
+
+                {comebackRecipients && (
+                  <div style={card} data-testid="comeback-recipient-list">
+                    <h3 style={{ marginTop: 0, fontSize: '1rem' }}>Recipients ({comebackRecipients.count})</h3>
+                    {comebackRecipients.count === 0 ? (
+                      <p style={{ color: '#9ca3af', margin: 0 }}>No prior users with emails yet.</p>
+                    ) : (
+                      <div style={{ maxHeight: 300, overflowY: 'auto' }}>
+                        {comebackRecipients.recipients.map((r) => (
+                          <div key={r.email} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.4rem 0', borderBottom: '1px solid #f3f4f6', fontSize: '0.85rem' }}>
+                            <span style={{ color: '#1f2937' }}>{r.email}</span>
+                            <span style={{ color: '#9ca3af' }}>{(r.last_trial || '').slice(0, 16).replace('T', ' ')}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <p style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '1rem' }}>
+                  ⚠ To actually send emails, add <code>RESEND_API_KEY</code> to backend/.env (get one at resend.com/api-keys) and restart the backend. Without it, the Send button returns a 503 with a helpful message.
+                </p>
               </div>
             )}
           </>

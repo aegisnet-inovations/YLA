@@ -148,6 +148,10 @@ class AccessStatus(BaseModel):
     access_type: str  # "trial", "review", "paid", "expired", "owner"
     time_remaining: str = ""
     message: str
+    is_returning: bool = False
+    discount_percent: int = 0
+    lifetime_price: float = 300.0
+    starter_price: float = 50.0
 
 
 class AdminLoginRequest(BaseModel):
@@ -343,6 +347,26 @@ async def load_history(session_id: str, limit: int = 20) -> List[Dict[str, str]]
     return [{"role": m["role"], "content": m["content"]} for m in msgs]
 
 
+async def compute_returning_discount(user_access: Dict[str, Any]) -> Dict[str, Any]:
+    """50% off Lifetime for returning users, valid only while their trial is active
+    and they have not yet paid or redeemed a free-review.
+    """
+    if not user_access or not user_access.get("is_returning"):
+        return {"percent": 0, "lifetime_price": 300.0, "starter_price": 50.0}
+    if user_access.get("has_paid") or user_access.get("has_reviewed"):
+        return {"percent": 0, "lifetime_price": 300.0, "starter_price": 50.0}
+    try:
+        ts = datetime.fromisoformat(user_access["trial_start"])
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        hours_elapsed = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
+    except Exception:
+        hours_elapsed = 999
+    if hours_elapsed > 24:
+        return {"percent": 0, "lifetime_price": 300.0, "starter_price": 50.0}
+    return {"percent": 50, "lifetime_price": 150.0, "starter_price": 50.0}
+
+
 async def check_user_access(session_id: str) -> AccessStatus:
     """Check if user has access to YLA (24h trial / paid / review)."""
     user_access = await db.user_access.find_one({"session_id": session_id}, {"_id": 0})
@@ -359,11 +383,18 @@ async def check_user_access(session_id: str) -> AccessStatus:
             message="Welcome to YLA - Your 24-hour trial has started!",
         )
 
+    discount = await compute_returning_discount(user_access)
+    is_returning = bool(user_access.get("is_returning"))
+
     if user_access.get('has_paid'):
         return AccessStatus(
             has_access=True,
             access_type="paid",
             message="Lifetime Access - YLA is yours for life!",
+            is_returning=is_returning,
+            discount_percent=0,
+            lifetime_price=300.0,
+            starter_price=50.0,
         )
 
     if user_access.get('has_reviewed'):
@@ -371,6 +402,10 @@ async def check_user_access(session_id: str) -> AccessStatus:
             has_access=True,
             access_type="review",
             message="Lifetime FREE Access - Thank you for your review!",
+            is_returning=is_returning,
+            discount_percent=0,
+            lifetime_price=300.0,
+            starter_price=50.0,
         )
 
     trial_start = datetime.fromisoformat(user_access['trial_start'])
@@ -382,21 +417,27 @@ async def check_user_access(session_id: str) -> AccessStatus:
 
     if hours_remaining > 0:
         time_str = f"{int(hours_remaining)}h {int((hours_remaining % 1) * 60)}m"
-        if hours_elapsed >= 12:
-            return AccessStatus(
-                has_access=True,
-                access_type="trial",
-                time_remaining=time_str,
-                message=(
-                    f"SPECIAL OFFER: Write a 5-star 300-word review for LIFETIME FREE ACCESS! "
-                    f"Or choose a payment plan. {time_str} remaining."
-                ),
+        if is_returning and discount["percent"] > 0:
+            msg = (
+                f"🎁 Welcome back! 50% OFF Lifetime — only ${int(discount['lifetime_price'])} "
+                f"if you upgrade before your trial ends ({time_str} left)."
             )
+        elif hours_elapsed >= 12:
+            msg = (
+                f"SPECIAL OFFER: Write a 5-star 300-word review for LIFETIME FREE ACCESS! "
+                f"Or choose a payment plan. {time_str} remaining."
+            )
+        else:
+            msg = f"Trial active: {time_str} remaining"
         return AccessStatus(
             has_access=True,
             access_type="trial",
             time_remaining=time_str,
-            message=f"Trial active: {time_str} remaining",
+            message=msg,
+            is_returning=is_returning,
+            discount_percent=discount["percent"],
+            lifetime_price=discount["lifetime_price"],
+            starter_price=discount["starter_price"],
         )
 
     return AccessStatus(
@@ -408,6 +449,10 @@ async def check_user_access(session_id: str) -> AccessStatus:
             "2) $50 deposit + $10/month "
             "3) $300 lifetime"
         ),
+        is_returning=is_returning,
+        discount_percent=0,
+        lifetime_price=300.0,
+        starter_price=50.0,
     )
 
 
@@ -442,21 +487,37 @@ async def register_email(req: EmailRegisterRequest):
     email = req.email.strip().lower()
     if "@" not in email or len(email) < 5:
         raise HTTPException(status_code=400, detail="Invalid email")
+
+    # Detect returning user: any other session already registered this email.
+    prior = await db.user_access.find_one(
+        {"email": email, "session_id": {"$ne": req.session_id}},
+        {"_id": 0, "session_id": 1},
+    )
+    is_returning = bool(prior)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    # For returning users, reset the trial_start to NOW so they get a fresh 24h
+    # window on the updated version, and flag them so checkout halves the price.
+    set_fields: Dict[str, Any] = {"email": email, "is_returning": is_returning}
+    set_on_insert: Dict[str, Any] = {
+        "session_id": req.session_id,
+        "review_text": "",
+    }
+    if is_returning:
+        set_fields["trial_start"] = now_iso
+        set_fields["has_paid"] = False
+        set_fields["has_reviewed"] = False
+    else:
+        set_on_insert["trial_start"] = now_iso
+        set_on_insert["has_paid"] = False
+        set_on_insert["has_reviewed"] = False
+
     await db.user_access.update_one(
         {"session_id": req.session_id},
-        {
-            "$set": {"email": email},
-            "$setOnInsert": {
-                "session_id": req.session_id,
-                "trial_start": datetime.now(timezone.utc).isoformat(),
-                "has_paid": False,
-                "has_reviewed": False,
-                "review_text": "",
-            },
-        },
+        {"$set": set_fields, "$setOnInsert": set_on_insert},
         upsert=True,
     )
-    return {"status": "ok", "email": email}
+    return {"status": "ok", "email": email, "is_returning": is_returning}
 
 
 @api_router.get("/access/{session_id}", response_model=AccessStatus)
@@ -757,19 +818,28 @@ async def create_checkout_session(req: CheckoutRequest, http_request: Request):
     success_url = f"{origin}/?payment=success&session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{origin}/?payment=cancel"
 
-    # Fetch user email (if we know it) just to tag the transaction.
-    user_row = await db.user_access.find_one({"session_id": req.session_id}, {"_id": 0, "email": 1})
+    # Fetch user and apply returning-user discount (Lifetime plan only).
+    user_row = await db.user_access.find_one({"session_id": req.session_id}, {"_id": 0})
     user_email = (user_row or {}).get("email", "")
+
+    amount = float(pkg["amount"])
+    discount = await compute_returning_discount(user_row or {})
+    discount_applied = 0
+    if req.plan == "lifetime" and discount["percent"] > 0:
+        amount = float(discount["lifetime_price"])
+        discount_applied = discount["percent"]
 
     metadata = {
         "app_session_id": req.session_id,
         "plan": req.plan,
         "user_email": user_email,
+        "discount_percent": str(discount_applied),
+        "original_amount": str(float(pkg["amount"])),
     }
 
     stripe = _stripe_client(http_request)
     checkout_req = CheckoutSessionRequest(
-        amount=float(pkg["amount"]),
+        amount=amount,
         currency=pkg["currency"],
         success_url=success_url,
         cancel_url=cancel_url,
@@ -784,8 +854,9 @@ async def create_checkout_session(req: CheckoutRequest, http_request: Request):
         "app_session_id": req.session_id,
         "email": user_email,
         "plan": req.plan,
-        "amount": float(pkg["amount"]),
+        "amount": amount,
         "currency": pkg["currency"],
+        "discount_percent": discount_applied,
         "payment_status": "initiated",
         "status": "initiated",
         "metadata": metadata,
@@ -884,6 +955,169 @@ async def admin_payments(admin=Depends(require_admin)):
     cursor = db.payment_transactions.find({}, {"_id": 0}).sort("created_at", -1).limit(500)
     txns = await cursor.to_list(length=500)
     return {"transactions": txns, "count": len(txns)}
+
+
+# ---------- Comeback campaign (50% off Lifetime for returning users) ----------
+COMEBACK_SUBJECT = "YLA just leveled up — here's 50% off, just for you"
+
+
+def _comeback_email_html(origin: str) -> str:
+    """Vibrant HTML invite for prior users. origin is the app base URL."""
+    origin = origin.rstrip("/")
+    return f"""<!doctype html>
+<html><body style="margin:0;padding:0;background:#0b0d12;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <div style="max-width:600px;margin:0 auto;padding:40px 24px;color:#f8fafc;">
+    <div style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);padding:2px;border-radius:20px;">
+      <div style="background:#0f1218;padding:36px 32px;border-radius:18px;">
+        <p style="margin:0 0 8px;font-size:13px;letter-spacing:3px;text-transform:uppercase;color:#a78bfa;font-weight:700;">AEGIS-NET · Owner Broadcast</p>
+        <h1 style="margin:0 0 16px;font-size:32px;line-height:1.15;color:#fff;">
+          YLA is <span style="background:linear-gradient(90deg,#f472b6,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">back</span> — and she remembers you.
+        </h1>
+        <p style="margin:0 0 24px;font-size:16px;line-height:1.55;color:#cbd5e1;">
+          You tried YLA early — thank you. The old build is gone.
+          The new one ships with <b>owner memory</b>, <b>wake-word voice control</b>,
+          and a rebuilt chat brain that learns the way you think.
+        </p>
+
+        <div style="background:linear-gradient(135deg,#10b981 0%,#059669 100%);padding:2px;border-radius:14px;margin:24px 0;">
+          <div style="background:#0f1218;padding:22px;border-radius:12px;text-align:center;">
+            <p style="margin:0 0 6px;font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#34d399;font-weight:700;">EARLY TESTER REWARD</p>
+            <p style="margin:0 0 4px;font-size:40px;font-weight:800;color:#fff;line-height:1;">
+              50% OFF
+            </p>
+            <p style="margin:0 0 14px;font-size:18px;color:#e2e8f0;">
+              Lifetime Access — <s style="color:#64748b;">$300</s> <b style="color:#34d399;">$150</b>
+            </p>
+            <p style="margin:0;font-size:13px;color:#94a3b8;">
+              Valid only while your fresh 24-hour trial is active. Once it ends, so does the offer.
+            </p>
+          </div>
+        </div>
+
+        <div style="text-align:center;margin:28px 0;">
+          <a href="{origin}" style="display:inline-block;padding:16px 40px;background:linear-gradient(90deg,#667eea,#764ba2);color:#fff;text-decoration:none;border-radius:999px;font-weight:700;font-size:16px;letter-spacing:0.5px;box-shadow:0 10px 30px rgba(118,75,162,0.4);">
+            Open YLA &nbsp;→
+          </a>
+        </div>
+
+        <p style="margin:28px 0 0;font-size:13px;line-height:1.6;color:#64748b;text-align:center;">
+          Your 24-hour trial resets the moment you log back in — so you have a full day to decide.<br/>
+          Sign in with the same email and the 50% discount auto-applies at Stripe checkout.
+        </p>
+      </div>
+    </div>
+    <p style="margin:24px 16px 0;font-size:11px;color:#475569;text-align:center;">
+      You received this because you tried YLA. Reply STOP to opt out.<br/>
+      AEGIS-NET · {OWNER_NAME}
+    </p>
+  </div>
+</body></html>"""
+
+
+class ComebackSendRequest(BaseModel):
+    origin_url: str
+    from_email: Optional[str] = None  # defaults to ADMIN_EMAIL
+
+
+@api_router.post("/admin/comeback/backfill")
+async def admin_comeback_backfill(admin=Depends(require_admin)):
+    """Mark every prior user (who has an email) as is_returning=True and reset their
+    trial window so they can actually use the updated version + redeem the 50% off.
+    Skips already-paid or already-reviewed users.
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+    result = await db.user_access.update_many(
+        {
+            "email": {"$exists": True, "$ne": ""},
+            "has_paid": {"$ne": True},
+            "has_reviewed": {"$ne": True},
+        },
+        {"$set": {"is_returning": True, "trial_start": now_iso}},
+    )
+    return {"status": "ok", "flagged": result.modified_count}
+
+
+@api_router.get("/admin/comeback/preview")
+async def admin_comeback_preview(request: Request, admin=Depends(require_admin)):
+    origin = str(request.base_url).rstrip("/")
+    # Return the rendered HTML so admin can preview in an iframe if desired.
+    html = _comeback_email_html(origin)
+    return {"subject": COMEBACK_SUBJECT, "html": html}
+
+
+@api_router.get("/admin/comeback/recipients")
+async def admin_comeback_recipients(admin=Depends(require_admin)):
+    """List unique emails that would receive the comeback blast."""
+    pipeline = [
+        {"$match": {
+            "email": {"$exists": True, "$ne": ""},
+            "has_paid": {"$ne": True},
+        }},
+        {"$group": {"_id": "$email", "last_trial": {"$max": "$trial_start"}}},
+        {"$sort": {"last_trial": -1}},
+    ]
+    rows = await db.user_access.aggregate(pipeline).to_list(length=5000)
+    emails = [{"email": r["_id"], "last_trial": r.get("last_trial", "")} for r in rows]
+    return {"recipients": emails, "count": len(emails)}
+
+
+@api_router.post("/admin/comeback/send")
+async def admin_comeback_send(req: ComebackSendRequest, admin=Depends(require_admin)):
+    resend_key = os.environ.get("RESEND_API_KEY", "")
+    if not resend_key:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Email sending requires a Resend API key. Add RESEND_API_KEY to "
+                "backend/.env — get one free at https://resend.com/api-keys — then retry."
+            ),
+        )
+    try:
+        import resend  # type: ignore
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="The 'resend' Python package is not installed on the backend.",
+        )
+
+    resend.api_key = resend_key
+    from_email = (req.from_email or os.environ.get("ADMIN_EMAIL", "owner@yla.app")).strip()
+
+    # Dedupe recipients
+    pipeline = [
+        {"$match": {
+            "email": {"$exists": True, "$ne": ""},
+            "has_paid": {"$ne": True},
+        }},
+        {"$group": {"_id": "$email"}},
+    ]
+    rows = await db.user_access.aggregate(pipeline).to_list(length=5000)
+    recipients = [r["_id"] for r in rows if r.get("_id")]
+
+    html = _comeback_email_html(req.origin_url)
+    sent = 0
+    failed: List[Dict[str, str]] = []
+    for email in recipients:
+        try:
+            resend.Emails.send({
+                "from": from_email,
+                "to": email,
+                "subject": COMEBACK_SUBJECT,
+                "html": html,
+            })
+            sent += 1
+        except Exception as e:  # noqa: BLE001
+            failed.append({"email": email, "error": str(e)})
+
+    await db.comeback_campaigns.insert_one({
+        "id": str(uuid.uuid4()),
+        "sent_at": datetime.now(timezone.utc).isoformat(),
+        "total": len(recipients),
+        "sent": sent,
+        "failed_count": len(failed),
+        "failed": failed[:50],
+    })
+    return {"status": "ok", "total": len(recipients), "sent": sent, "failed": len(failed)}
 
 
 # ---------- Startup: seed admin ----------
