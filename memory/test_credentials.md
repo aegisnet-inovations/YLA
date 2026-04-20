@@ -1,7 +1,7 @@
 # YLA - Test Credentials
 
 ## Admin / Owner Login
-- **Preview URL:** https://ai-childcare-1.preview.emergentagent.com/admin
+- **Preview URL:** https://aegis-jarvis-ai.preview.emergentagent.com/admin
 - **Production URL:** https://ai-childcare-1.emergent.host/admin
 - **Email:** `michaelnorthern1@proton.me`
 - **Password:** `YLA-Owner-2026!`
