@@ -79,6 +79,56 @@ function App() {
     }
   }, [loadChatHistory, checkAccess]);
 
+  // Handle return from Stripe Checkout: poll status, unlock, clean URL.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const payStatus = params.get('payment');
+    const csid = params.get('session_id');
+    if (!payStatus) return;
+
+    const cleanUrl = () => {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('payment');
+      url.searchParams.delete('session_id');
+      window.history.replaceState({}, '', url.pathname + (url.search ? '?' + url.searchParams.toString() : ''));
+    };
+
+    if (payStatus === 'cancel' || !csid) {
+      cleanUrl();
+      return;
+    }
+
+    let cancelled = false;
+    const poll = async (attempts = 0) => {
+      if (cancelled || attempts > 6) {
+        cleanUrl();
+        return;
+      }
+      try {
+        const res = await api.get(`/payments/checkout/status/${csid}`);
+        const data = res.data;
+        if (data.payment_status === 'paid') {
+          alert('✅ Payment confirmed! YLA is now fully unlocked.');
+          if (data.app_session_id) checkAccess(data.app_session_id);
+          else if (sessionId) checkAccess(sessionId);
+          cleanUrl();
+          return;
+        }
+        if (data.status === 'expired') {
+          alert('Payment session expired — please try again.');
+          cleanUrl();
+          return;
+        }
+      } catch {
+        /* transient, retry */
+      }
+      setTimeout(() => poll(attempts + 1), 2000);
+    };
+    poll();
+    return () => { cancelled = true; };
+  }, [checkAccess, sessionId]);
+
   // Auto-scroll with proper dependency
   useEffect(() => {
     scrollToBottom();

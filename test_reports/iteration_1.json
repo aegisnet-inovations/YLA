@@ -1,0 +1,33 @@
+{
+  "summary": "Backend-only test pass for YLA Owner Memory + Stripe Checkout + admin auth + existing endpoints. Created /app/backend/tests/test_yla_backend.py with 36 pytest cases spanning admin auth (cookie + 401 gates), Owner Memory CRUD + length validation + ascending sort, owner chat auto-extraction (verified source='auto' facts appear within ~10s of owner chat with durable info), non-owner chat does NOT trigger extraction, Stripe checkout session creation for 'lifetime' + 'starter' with invalid-plan 400, status fetch updates transaction row, admin/payments listing confirms 'initiated' payment_transactions rows, plus regression on /access, /register-email, /admin/stats|users|reviews|mark-paid|grant-lifetime|revoke, /review validation, and anonymous /chat trial. 36/36 PASSED against public REACT_APP_BACKEND_URL in 21.58s.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/admin/memory (POST)", "issue": "Response does not strip Mongo _id via pydantic model but doc.pop('_id', None) is called post-insert; works correctly. Consider returning MemoryFact model for consistency."},
+      {"endpoint": "/api/payments/checkout/session", "issue": "No rate-limit / no auth; any anonymous caller can create Stripe sessions. Low risk given fixed server-side packages, but worth revisiting."},
+      {"endpoint": "/api/webhook/stripe", "issue": "Not tested (requires real Stripe signature). Code path reviewed only."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_yla_backend.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 930 lines — approaching the 700-line guideline. Recommend splitting into routers: auth.py, admin.py, memory.py, payments.py, chat.py.",
+    "asyncio.create_task(extract_and_save_owner_facts(...)) is fire-and-forget with no reference stored; task can be garbage-collected mid-run on some event loops. Low-impact because OpenAI calls are short, but saving the task reference or using a background task queue is safer.",
+    "/api/payments/checkout/session is unauthenticated — anyone can create Stripe sessions tied to any session_id. Consider at least session-id ownership validation or basic rate limiting.",
+    "load_owner_memory() is called per chat turn to build the system prompt, which hits Mongo on every owner chat. Consider a simple in-process TTL cache invalidated on memory writes.",
+    "admin_login sets cookie with secure=True which is correct for https preview but will prevent local http dev; consider conditioning on env.",
+    "extract_and_save_owner_facts dedups by lower().strip() but does not enforce any similarity dedupe — near-duplicate auto facts can accumulate over time."
+  ],
+  "updated_files": ["/app/backend/tests/test_yla_backend.py"],
+  "success_rate": {"backend": "100% (36/36)", "frontend": "n/a — backend only"},
+  "test_credentials": "Admin: michaelnorthern1@proton.me / YLA-Owner-2026! (read from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Test created TEST_ prefixed user_access rows (grant/revoke test), payment_transactions rows for lifetime+starter Stripe sessions (status='initiated', not paid), and transient owner_memory facts (cleaned up at session start+end by autouse fixture).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Regression suite lives at /app/backend/tests/test_yla_backend.py. Re-run with: pytest backend/tests/test_yla_backend.py -v --junitxml=/app/test_reports/pytest/pytest_results.xml. Owner auto-extraction waits up to 12s per poll loop — depends on OpenAI gpt-4o-mini latency. Stripe test uses sk_test_emergent and returns real checkout.stripe.com URLs (not paid in tests). Cleanup fixture clears owner_memory before+after; payment_transactions TEST_* rows are left behind (harmless).",
+  "rca of the issue": "No issues found — all endpoints behaved per spec."
+}

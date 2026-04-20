@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { LogOut, Users, Star, MessageSquare, DollarSign, RefreshCw } from 'lucide-react';
+import { LogOut, Users, Star, MessageSquare, DollarSign, RefreshCw, Brain, Trash2, Plus } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -122,21 +122,26 @@ function Dashboard({ onLogout }) {
   const [stats, setStats] = useState(null);
   const [users, setUsers] = useState([]);
   const [reviews, setReviews] = useState([]);
+  const [memory, setMemory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('users');
   const [actionBusy, setActionBusy] = useState(null);
+  const [newFact, setNewFact] = useState('');
+  const [memBusy, setMemBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, u, r] = await Promise.all([
+      const [s, u, r, m] = await Promise.all([
         adminAxios.get('/admin/stats'),
         adminAxios.get('/admin/users'),
         adminAxios.get('/admin/reviews'),
+        adminAxios.get('/admin/memory'),
       ]);
       setStats(s.data);
       setUsers(u.data.users);
       setReviews(r.data.reviews);
+      setMemory(m.data.facts);
     } catch (err) {
       if (err.response?.status === 401) onLogout();
     } finally {
@@ -155,6 +160,41 @@ function Dashboard({ onLogout }) {
       alert(err.response?.data?.detail || 'Action failed');
     } finally {
       setActionBusy(null);
+    }
+  };
+
+  const addFact = async (e) => {
+    e.preventDefault();
+    if (!newFact.trim()) return;
+    setMemBusy(true);
+    try {
+      await adminAxios.post('/admin/memory', { fact: newFact.trim() });
+      setNewFact('');
+      await load();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to add fact');
+    } finally {
+      setMemBusy(false);
+    }
+  };
+
+  const deleteFact = async (id) => {
+    if (!window.confirm('Forget this fact permanently?')) return;
+    try {
+      await adminAxios.delete(`/admin/memory/${id}`);
+      await load();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Delete failed');
+    }
+  };
+
+  const clearAllMemory = async () => {
+    if (!window.confirm('Wipe ALL owner memory? YLA will forget everything it has learned about you.')) return;
+    try {
+      await adminAxios.delete('/admin/memory');
+      await load();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Clear failed');
     }
   };
 
@@ -220,6 +260,11 @@ function Dashboard({ onLogout }) {
                 onClick={() => setTab('reviews')}
                 style={{ padding: '0.5rem 1rem', background: tab === 'reviews' ? '#667eea' : '#e5e7eb', color: tab === 'reviews' ? 'white' : '#374151', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 600 }}
               >Reviews ({reviews.length})</button>
+              <button
+                data-testid="admin-tab-memory"
+                onClick={() => setTab('memory')}
+                style={{ padding: '0.5rem 1rem', background: tab === 'memory' ? '#667eea' : '#e5e7eb', color: tab === 'memory' ? 'white' : '#374151', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+              ><Brain size={16} /> Memory ({memory.length})</button>
             </div>
 
             {tab === 'users' && (
@@ -322,6 +367,93 @@ function Dashboard({ onLogout }) {
                 {reviews.length === 0 && (
                   <p style={{ color: '#9ca3af', textAlign: 'center', padding: '2rem' }}>No reviews yet</p>
                 )}
+              </div>
+            )}
+
+            {tab === 'memory' && (
+              <div data-testid="admin-memory-panel">
+                <div style={{ ...card, marginBottom: '1rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                    <Brain size={20} color="#667eea" />
+                    <h2 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700 }}>AEGIS Owner Memory</h2>
+                  </div>
+                  <p style={{ color: '#6b7280', fontSize: '0.85rem', margin: '0 0 1rem 0' }}>
+                    Persistent facts YLA knows about you. Auto-extracted from every owner chat and injected into YLA's system prompt so she remembers you across sessions.
+                  </p>
+                  <form onSubmit={addFact} style={{ display: 'flex', gap: '0.5rem' }}>
+                    <input
+                      data-testid="memory-add-input"
+                      type="text"
+                      value={newFact}
+                      onChange={(e) => setNewFact(e.target.value)}
+                      placeholder="Add a fact manually (e.g., 'The Owner is based in Missouri.')"
+                      style={{ flex: 1, padding: '0.65rem 0.75rem', border: '2px solid #e5e7eb', borderRadius: '8px', fontSize: '0.9rem' }}
+                    />
+                    <button
+                      data-testid="memory-add-submit"
+                      type="submit"
+                      disabled={memBusy || !newFact.trim()}
+                      style={{ ...btnBase, background: '#667eea', padding: '0.65rem 1rem', display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.85rem', opacity: memBusy ? 0.6 : 1 }}
+                    >
+                      <Plus size={16} /> Add
+                    </button>
+                    {memory.length > 0 && (
+                      <button
+                        data-testid="memory-clear-all"
+                        type="button"
+                        onClick={clearAllMemory}
+                        style={{ ...btnRed, padding: '0.65rem 1rem', fontSize: '0.85rem' }}
+                      >
+                        Wipe All
+                      </button>
+                    )}
+                  </form>
+                </div>
+
+                <div style={{ display: 'grid', gap: '0.5rem' }} data-testid="admin-memory-list">
+                  {memory.map((f) => (
+                    <div
+                      key={f.id}
+                      style={{
+                        ...card,
+                        padding: '0.85rem 1rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: '1rem',
+                      }}
+                    >
+                      <div style={{ flex: 1 }}>
+                        <p style={{ margin: 0, color: '#111827', fontSize: '0.95rem' }}>{f.fact}</p>
+                        <p style={{ margin: '0.25rem 0 0', fontSize: '0.7rem', color: '#9ca3af' }}>
+                          <span style={{
+                            display: 'inline-block',
+                            padding: '0.1rem 0.5rem',
+                            background: f.source === 'auto' ? '#ede9fe' : '#dbeafe',
+                            color: f.source === 'auto' ? '#6d28d9' : '#1e40af',
+                            borderRadius: 999,
+                            fontWeight: 600,
+                            marginRight: '0.5rem',
+                          }}>{f.source === 'auto' ? 'AUTO' : 'MANUAL'}</span>
+                          {f.created_at?.slice(0, 16).replace('T', ' ')}
+                        </p>
+                      </div>
+                      <button
+                        data-testid={`memory-delete-${f.id}`}
+                        onClick={() => deleteFact(f.id)}
+                        style={{ ...btnRed, padding: '0.4rem 0.6rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}
+                        title="Delete fact"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ))}
+                  {memory.length === 0 && (
+                    <p style={{ color: '#9ca3af', textAlign: 'center', padding: '2rem' }}>
+                      No memories yet. Chat with YLA while signed in as owner — she'll start learning automatically.
+                    </p>
+                  )}
+                </div>
               </div>
             )}
           </>

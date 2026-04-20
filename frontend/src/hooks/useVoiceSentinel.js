@@ -3,14 +3,19 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 /**
  * AEGIS Sentinel — always-on voice listener with wake word.
  *
- *  - Listens continuously (re-starts on end, handles errors).
+ *  - Listens continuously (auto-restarts on end/error, handles silent timeouts).
  *  - Waits for the wake word (default "yla" or "hey yla").
  *  - After wake word, captures the NEXT final transcript as a command.
  *  - Speaks the assistant reply aloud.
  *  - Pauses listening while YLA is speaking to avoid self-triggering.
+ *  - Watchdog: if no result arrives for WATCHDOG_MS, restart the recognizer.
+ *  - Tab visibility: re-arms when the tab returns to focus.
  *
- *  Returns { enabled, listening, status, toggle, speak, supported }
+ *  Returns { listening, status, speak, supported }
  */
+const WATCHDOG_MS = 20000; // 20s of silence -> restart recognizer
+const RETRY_BACKOFF_MS = 800;
+
 export default function useVoiceSentinel({
   onCommand,
   wakeWords = ['yla', 'hey yla', 'yla ', 'yala'],
@@ -21,6 +26,9 @@ export default function useVoiceSentinel({
   const speakingRef = useRef(false);
   const armedRef = useRef(false); // true when wake word heard, awaiting command
   const shouldRunRef = useRef(false);
+  const watchdogRef = useRef(null);
+  const restartTimerRef = useRef(null);
+  const isRunningRef = useRef(false);
   const [listening, setListening] = useState(false);
   const [status, setStatus] = useState('idle');
 
@@ -52,6 +60,8 @@ export default function useVoiceSentinel({
   useEffect(() => {
     if (!supported || !enabled) {
       shouldRunRef.current = false;
+      if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
+      if (restartTimerRef.current) { clearTimeout(restartTimerRef.current); restartTimerRef.current = null; }
       try { recognitionRef.current?.stop(); } catch { /* noop */ }
       setListening(false);
       setStatusSafe('idle');
@@ -66,7 +76,39 @@ export default function useVoiceSentinel({
     recognitionRef.current = rec;
     shouldRunRef.current = true;
 
+    const armWatchdog = () => {
+      if (watchdogRef.current) clearTimeout(watchdogRef.current);
+      watchdogRef.current = setTimeout(() => {
+        // Recognizer went silent — force restart.
+        if (!shouldRunRef.current) return;
+        try { rec.stop(); } catch { /* noop */ }
+        // onend will fire and schedule restart.
+      }, WATCHDOG_MS);
+    };
+
+    const scheduleRestart = (delay = RETRY_BACKOFF_MS) => {
+      if (!shouldRunRef.current) return;
+      if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = setTimeout(() => {
+        if (!shouldRunRef.current || isRunningRef.current) return;
+        try {
+          rec.start();
+        } catch {
+          // already running or still winding down — try again shortly
+          scheduleRestart(delay * 2);
+        }
+      }, delay);
+    };
+
+    const handleStart = () => {
+      isRunningRef.current = true;
+      setListening(true);
+      if (!speakingRef.current) setStatusSafe('listening');
+      armWatchdog();
+    };
+
     const handleResult = (e) => {
+      armWatchdog();
       if (speakingRef.current) return; // don't react while YLA is talking
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const res = e.results[i];
@@ -77,7 +119,6 @@ export default function useVoiceSentinel({
           // Waiting for wake word
           const hasWake = wakeWords.some((w) => transcript.includes(w));
           if (hasWake && res.isFinal) {
-            // strip the wake word and take anything after, or arm for next utterance
             let after = transcript;
             for (const w of wakeWords) {
               const idx = after.indexOf(w);
@@ -93,7 +134,6 @@ export default function useVoiceSentinel({
             }
           }
         } else if (res.isFinal) {
-          // Already armed — take this full utterance as the command
           onCommand?.(transcript);
           armedRef.current = false;
           setStatusSafe('listening');
@@ -102,38 +142,62 @@ export default function useVoiceSentinel({
     };
 
     const handleEnd = () => {
+      isRunningRef.current = false;
       setListening(false);
+      if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
       if (shouldRunRef.current) {
-        // Auto-restart to stay always-on
-        try { rec.start(); setListening(true); } catch { /* noop */ }
+        scheduleRestart(RETRY_BACKOFF_MS);
       }
     };
 
     const handleError = (ev) => {
-      // "not-allowed" = mic permission denied; stop.
-      if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+      const err = ev?.error;
+      // Permission errors are terminal.
+      if (err === 'not-allowed' || err === 'service-not-allowed') {
         shouldRunRef.current = false;
         setStatusSafe('denied');
+        return;
+      }
+      // Transient errors — let onend fire and restart.
+      // Known transient: 'no-speech', 'audio-capture', 'network', 'aborted'
+      // Give the browser a moment before we try again.
+      if (err === 'network') {
+        scheduleRestart(2000);
       }
     };
 
+    const handleVisibility = () => {
+      if (!shouldRunRef.current) return;
+      if (document.visibilityState === 'visible' && !isRunningRef.current) {
+        scheduleRestart(300);
+      }
+    };
+
+    rec.onstart = handleStart;
     rec.onresult = handleResult;
     rec.onend = handleEnd;
     rec.onerror = handleError;
+    document.addEventListener('visibilitychange', handleVisibility);
 
     try {
       rec.start();
-      setListening(true);
-      setStatusSafe('listening');
-    } catch { /* Already started */ }
+    } catch {
+      // already running — schedule one restart in case the existing instance ends
+      scheduleRestart(500);
+    }
 
     return () => {
       shouldRunRef.current = false;
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
+      if (restartTimerRef.current) { clearTimeout(restartTimerRef.current); restartTimerRef.current = null; }
+      rec.onstart = null;
       rec.onresult = null;
       rec.onend = null;
       rec.onerror = null;
       try { rec.stop(); } catch { /* noop */ }
       try { window.speechSynthesis.cancel(); } catch { /* noop */ }
+      isRunningRef.current = false;
       setListening(false);
     };
   }, [enabled, supported, onCommand, setStatusSafe, wakeWords]);

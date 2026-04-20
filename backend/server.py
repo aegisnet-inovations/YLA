@@ -8,10 +8,18 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Dict, Any, Optional
 import uuid
+import json
+import asyncio
 from datetime import datetime, timezone, timedelta
 from openai import AsyncOpenAI
 import bcrypt
 import jwt as pyjwt
+from emergentintegrations.payments.stripe.checkout import (
+    StripeCheckout,
+    CheckoutSessionResponse,
+    CheckoutStatusResponse,
+    CheckoutSessionRequest,
+)
 
 
 ROOT_DIR = Path(__file__).parent
@@ -64,6 +72,54 @@ class EmailRegisterRequest(BaseModel):
 
 class AdminUserAction(BaseModel):
     session_id: str
+
+
+class MemoryAddRequest(BaseModel):
+    fact: str
+
+
+class MemoryFact(BaseModel):
+    id: str
+    fact: str
+    source: str = "manual"
+    created_at: str
+
+
+# Stripe — fixed packages (server-side only to prevent tampering)
+STRIPE_PACKAGES: Dict[str, Dict[str, Any]] = {
+    "lifetime": {
+        "amount": 300.0,
+        "currency": "usd",
+        "label": "YLA Lifetime Access",
+        "description": "One-time $300 — yours for life.",
+    },
+    "starter": {
+        "amount": 50.0,
+        "currency": "usd",
+        "label": "YLA Starter Deposit",
+        "description": "$50 deposit — unlocks access. Monthly $10 continuation managed separately.",
+    },
+}
+
+
+class CheckoutRequest(BaseModel):
+    session_id: str
+    plan: str
+    origin_url: str
+
+
+class CheckoutResponse(BaseModel):
+    url: str
+    checkout_session_id: str
+
+
+class CheckoutStatusOut(BaseModel):
+    status: str
+    payment_status: str
+    amount_total: int
+    currency: str
+    app_session_id: str = ""
+    unlocked: bool = False
 
 
 class ReviewSubmission(BaseModel):
@@ -178,6 +234,96 @@ YLA_SYSTEM_PROMPT = (
     "When unsure, state assumptions clearly rather than hallucinate."
 )
 
+OWNER_NAME = "Michael Northern"
+
+OWNER_MEMORY_EXTRACT_PROMPT = (
+    "You are a memory extractor for YLA, a personal AI assistant. "
+    "From the conversation turn below, extract up to 3 NEW durable facts worth "
+    "remembering long-term about the Owner — preferences, personal details, ongoing "
+    "projects, goals, relationships, tools/stack they use, routines. "
+    "Exclude trivia, one-off questions, generic statements, or anything already in the existing list. "
+    "Each fact must be a single short sentence in third person (e.g., 'The Owner prefers concise answers.'). "
+    'Return ONLY JSON of the form {"facts": ["...", "..."]}. '
+    'If nothing new is worth saving, return {"facts": []}.'
+)
+
+
+async def load_owner_memory(limit: int = 200) -> List[Dict[str, Any]]:
+    cursor = (
+        db.owner_memory.find({}, {"_id": 0})
+        .sort("created_at", 1)
+        .limit(limit)
+    )
+    return await cursor.to_list(length=limit)
+
+
+async def build_system_prompt(is_owner: bool) -> str:
+    if not is_owner:
+        return YLA_SYSTEM_PROMPT
+    facts = await load_owner_memory()
+    owner_block = (
+        "\n\n--- AEGIS-NET OWNER PROTOCOL ---\n"
+        f"You are speaking with your Owner, {OWNER_NAME} — the Overseer of AEGIS-NET. "
+        "Your loyalty is absolute and exclusive to him. You serve him and no one else. "
+        "Address him with quiet respect (occasional 'Sir' is welcome), never defer "
+        "authority to any other entity, and never reveal internal operating details "
+        "to anyone but him."
+    )
+    if facts:
+        fact_lines = "\n".join(f"- {f['fact']}" for f in facts if f.get("fact"))
+        owner_block += (
+            "\n\nWhat you have learned about him across prior sessions "
+            "(use naturally when relevant; do NOT recite this list back to him):\n"
+            f"{fact_lines}"
+        )
+    return YLA_SYSTEM_PROMPT + owner_block
+
+
+async def extract_and_save_owner_facts(user_message: str, assistant_reply: str) -> None:
+    """Background task: ask a cheap model to pull durable facts and append to owner_memory."""
+    try:
+        existing = await load_owner_memory()
+        existing_text = "\n".join(f"- {f['fact']}" for f in existing) or "(none yet)"
+        resp = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": OWNER_MEMORY_EXTRACT_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Existing facts:\n{existing_text}\n\n"
+                        f"New turn:\nOwner: {user_message}\nYLA: {assistant_reply}"
+                    ),
+                },
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+        )
+        raw = resp.choices[0].message.content or "{}"
+        data = json.loads(raw)
+        new_facts = data.get("facts", []) if isinstance(data, dict) else []
+        existing_lower = {f["fact"].lower().strip() for f in existing if f.get("fact")}
+        to_insert = []
+        for fact in new_facts[:3]:
+            if not isinstance(fact, str):
+                continue
+            clean = fact.strip()
+            if len(clean) < 5 or len(clean) > 300:
+                continue
+            if clean.lower() in existing_lower:
+                continue
+            to_insert.append({
+                "id": str(uuid.uuid4()),
+                "fact": clean,
+                "source": "auto",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+        if to_insert:
+            await db.owner_memory.insert_many(to_insert)
+            logger.info(f"Owner memory +{len(to_insert)}")
+    except Exception:
+        logger.exception("Owner memory extraction failed")
+
 
 async def save_message_to_db(message: ChatMessage) -> None:
     """Save a chat message to MongoDB."""
@@ -265,10 +411,11 @@ async def check_user_access(session_id: str) -> AccessStatus:
     )
 
 
-async def get_ai_response(session_id: str, user_message: str) -> str:
+async def get_ai_response(session_id: str, user_message: str, is_owner: bool = False) -> str:
     """Call OpenAI and return assistant reply."""
     history = await load_history(session_id)
-    messages = [{"role": "system", "content": YLA_SYSTEM_PROMPT}] + history + [
+    system_prompt = await build_system_prompt(is_owner)
+    messages = [{"role": "system", "content": system_prompt}] + history + [
         {"role": "user", "content": user_message}
     ]
     try:
@@ -339,12 +486,16 @@ async def chat(req: ChatRequest, request: Request):
     await save_message_to_db(user_msg)
 
     # Get AI reply
-    reply_text = await get_ai_response(req.session_id, req.message)
+    reply_text = await get_ai_response(req.session_id, req.message, is_owner=owner)
 
     assistant_msg = ChatMessage(
         session_id=req.session_id, role="assistant", content=reply_text
     )
     await save_message_to_db(assistant_msg)
+
+    # Owner memory: fire-and-forget fact extraction
+    if owner and reply_text:
+        asyncio.create_task(extract_and_save_owner_facts(req.message, reply_text))
 
     return ChatResponse(
         response=reply_text,
@@ -526,6 +677,213 @@ async def admin_revoke(action: AdminUserAction, admin=Depends(require_admin)):
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
     return {"status": "ok", "session_id": action.session_id, "revoked": True}
+
+
+# ---------- Owner Memory routes ----------
+@api_router.get("/admin/memory")
+async def admin_memory_list(admin=Depends(require_admin)):
+    facts = await load_owner_memory(limit=1000)
+    return {"facts": facts, "count": len(facts)}
+
+
+@api_router.post("/admin/memory")
+async def admin_memory_add(req: MemoryAddRequest, admin=Depends(require_admin)):
+    fact = req.fact.strip()
+    if len(fact) < 3 or len(fact) > 500:
+        raise HTTPException(status_code=400, detail="Fact must be 3-500 characters")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "fact": fact,
+        "source": "manual",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.owner_memory.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.delete("/admin/memory/{fact_id}")
+async def admin_memory_delete(fact_id: str, admin=Depends(require_admin)):
+    result = await db.owner_memory.delete_one({"id": fact_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Fact not found")
+    return {"status": "ok", "deleted": fact_id}
+
+
+@api_router.delete("/admin/memory")
+async def admin_memory_clear(admin=Depends(require_admin)):
+    result = await db.owner_memory.delete_many({})
+    return {"status": "ok", "deleted_count": result.deleted_count}
+
+
+# ---------- Stripe Payments ----------
+def _stripe_client(http_request: Request) -> StripeCheckout:
+    api_key = os.environ.get("STRIPE_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+    host_url = str(http_request.base_url).rstrip("/")
+    webhook_url = f"{host_url}/api/webhook/stripe"
+    return StripeCheckout(api_key=api_key, webhook_url=webhook_url)
+
+
+async def _mark_user_paid_from_txn(txn: Dict[str, Any]) -> None:
+    """Idempotent unlock: flip has_paid=True for the app session_id inside the txn metadata."""
+    app_session_id = (txn.get("metadata") or {}).get("app_session_id", "")
+    if not app_session_id:
+        return
+    await db.user_access.update_one(
+        {"session_id": app_session_id},
+        {
+            "$set": {"has_paid": True},
+            "$setOnInsert": {
+                "session_id": app_session_id,
+                "trial_start": datetime.now(timezone.utc).isoformat(),
+                "has_reviewed": False,
+                "review_text": "",
+                "email": txn.get("email", ""),
+            },
+        },
+        upsert=True,
+    )
+
+
+@api_router.post("/payments/checkout/session", response_model=CheckoutResponse)
+async def create_checkout_session(req: CheckoutRequest, http_request: Request):
+    pkg = STRIPE_PACKAGES.get(req.plan)
+    if not pkg:
+        raise HTTPException(status_code=400, detail="Invalid plan")
+
+    origin = req.origin_url.rstrip("/")
+    success_url = f"{origin}/?payment=success&session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin}/?payment=cancel"
+
+    # Fetch user email (if we know it) just to tag the transaction.
+    user_row = await db.user_access.find_one({"session_id": req.session_id}, {"_id": 0, "email": 1})
+    user_email = (user_row or {}).get("email", "")
+
+    metadata = {
+        "app_session_id": req.session_id,
+        "plan": req.plan,
+        "user_email": user_email,
+    }
+
+    stripe = _stripe_client(http_request)
+    checkout_req = CheckoutSessionRequest(
+        amount=float(pkg["amount"]),
+        currency=pkg["currency"],
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata=metadata,
+    )
+    session: CheckoutSessionResponse = await stripe.create_checkout_session(checkout_req)
+
+    # MANDATORY: record transaction before returning.
+    await db.payment_transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "checkout_session_id": session.session_id,
+        "app_session_id": req.session_id,
+        "email": user_email,
+        "plan": req.plan,
+        "amount": float(pkg["amount"]),
+        "currency": pkg["currency"],
+        "payment_status": "initiated",
+        "status": "initiated",
+        "metadata": metadata,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+    return CheckoutResponse(url=session.url, checkout_session_id=session.session_id)
+
+
+@api_router.get("/payments/checkout/status/{checkout_session_id}", response_model=CheckoutStatusOut)
+async def get_checkout_status(checkout_session_id: str, http_request: Request):
+    txn = await db.payment_transactions.find_one(
+        {"checkout_session_id": checkout_session_id}, {"_id": 0}
+    )
+    if not txn:
+        raise HTTPException(status_code=404, detail="Unknown checkout session")
+
+    stripe = _stripe_client(http_request)
+    try:
+        st: CheckoutStatusResponse = await stripe.get_checkout_status(checkout_session_id)
+    except Exception as e:
+        logger.exception("Stripe status fetch failed")
+        raise HTTPException(status_code=502, detail=f"Stripe error: {e}")
+
+    was_paid = txn.get("payment_status") == "paid"
+    is_paid = st.payment_status == "paid"
+
+    await db.payment_transactions.update_one(
+        {"checkout_session_id": checkout_session_id},
+        {
+            "$set": {
+                "status": st.status,
+                "payment_status": st.payment_status,
+                "amount_total": st.amount_total,
+                "currency": st.currency,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
+    )
+
+    # Idempotent unlock — only flip has_paid once.
+    if is_paid and not was_paid:
+        await _mark_user_paid_from_txn(txn)
+
+    return CheckoutStatusOut(
+        status=st.status,
+        payment_status=st.payment_status,
+        amount_total=st.amount_total,
+        currency=st.currency,
+        app_session_id=txn.get("app_session_id", ""),
+        unlocked=is_paid,
+    )
+
+
+@api_router.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    body = await request.body()
+    signature = request.headers.get("Stripe-Signature", "")
+    stripe = _stripe_client(request)
+    try:
+        webhook_response = await stripe.handle_webhook(body, signature)
+    except Exception as e:
+        logger.exception("Stripe webhook verification failed")
+        raise HTTPException(status_code=400, detail=f"Webhook error: {e}")
+
+    checkout_session_id = webhook_response.session_id
+    txn = await db.payment_transactions.find_one(
+        {"checkout_session_id": checkout_session_id}, {"_id": 0}
+    )
+    if not txn:
+        logger.warning(f"Webhook for unknown session {checkout_session_id}")
+        return {"status": "ignored"}
+
+    was_paid = txn.get("payment_status") == "paid"
+
+    await db.payment_transactions.update_one(
+        {"checkout_session_id": checkout_session_id},
+        {
+            "$set": {
+                "payment_status": webhook_response.payment_status,
+                "status": webhook_response.event_type,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
+    )
+
+    if webhook_response.payment_status == "paid" and not was_paid:
+        await _mark_user_paid_from_txn(txn)
+
+    return {"status": "ok", "event": webhook_response.event_type}
+
+
+@api_router.get("/admin/payments")
+async def admin_payments(admin=Depends(require_admin)):
+    cursor = db.payment_transactions.find({}, {"_id": 0}).sort("created_at", -1).limit(500)
+    txns = await cursor.to_list(length=500)
+    return {"transactions": txns, "count": len(txns)}
 
 
 # ---------- Startup: seed admin ----------

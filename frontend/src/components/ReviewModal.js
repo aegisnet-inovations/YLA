@@ -7,11 +7,41 @@ const ReviewModal = ({ sessionId, onSuccess, onClose, showPaymentOptions }) => {
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showReview, setShowReview] = useState(true);
+  const [payBusy, setPayBusy] = useState(null); // 'lifetime' | 'starter' | null
 
   const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
   const API = `${BACKEND_URL}/api`;
 
   const wordCount = reviewText.trim().split(/\s+/).filter(w => w).length;
+
+  const startCheckout = async (plan) => {
+    setPayBusy(plan);
+    setError('');
+    try {
+      const res = await fetch(`${API}/payments/checkout/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: sessionId,
+          plan,
+          origin_url: window.location.origin,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || 'Could not start checkout');
+      }
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        throw new Error('No checkout URL returned');
+      }
+    } catch (e) {
+      setError(e.message || 'Payment error');
+      setPayBusy(null);
+    }
+  };
 
   const handleSubmit = async () => {
     if (wordCount < 300) {
@@ -177,11 +207,13 @@ const ReviewModal = ({ sessionId, onSuccess, onClose, showPaymentOptions }) => {
                 borderRadius: '8px',
                 marginBottom: '1rem'
               }}>
-                <h4>💳 Option 1: Subscription</h4>
-                <p><strong>$50 deposit</strong> + <strong>$10/month</strong></p>
-                <p style={{ fontSize: '0.875rem', color: '#666' }}>Cancel anytime, lifetime ownership</p>
-                <button 
-                  onClick={() => window.open('https://paypal.me/MichaelNorthern200/50', '_blank')}
+                <h4>💳 Option 1: Starter Deposit</h4>
+                <p><strong>$50 deposit</strong> — unlocks access immediately</p>
+                <p style={{ fontSize: '0.875rem', color: '#666' }}>Monthly $10 continuation managed separately.</p>
+                <button
+                  data-testid="pay-starter-btn"
+                  disabled={payBusy !== null}
+                  onClick={() => startCheckout('starter')}
                   style={{
                     marginTop: '0.5rem',
                     padding: '0.75rem 1.5rem',
@@ -189,12 +221,13 @@ const ReviewModal = ({ sessionId, onSuccess, onClose, showPaymentOptions }) => {
                     color: 'white',
                     border: 'none',
                     borderRadius: '6px',
-                    cursor: 'pointer',
+                    cursor: payBusy ? 'not-allowed' : 'pointer',
                     fontWeight: 600,
-                    fontSize: '1rem'
+                    fontSize: '1rem',
+                    opacity: payBusy ? 0.6 : 1,
                   }}
                 >
-                  Pay $50 Deposit
+                  {payBusy === 'starter' ? 'Redirecting…' : 'Pay $50 with Stripe'}
                 </button>
               </div>
 
@@ -207,8 +240,10 @@ const ReviewModal = ({ sessionId, onSuccess, onClose, showPaymentOptions }) => {
                 <h4>💎 Option 2: Lifetime (Best Value!)</h4>
                 <p><strong>$300 one-time payment</strong></p>
                 <p style={{ fontSize: '0.875rem', color: '#666' }}>Pay once, yours for life</p>
-                <button 
-                  onClick={() => window.open('https://paypal.me/MichaelNorthern200/300', '_blank')}
+                <button
+                  data-testid="pay-lifetime-btn"
+                  disabled={payBusy !== null}
+                  onClick={() => startCheckout('lifetime')}
                   style={{
                     marginTop: '0.5rem',
                     padding: '0.75rem 1.5rem',
@@ -216,12 +251,13 @@ const ReviewModal = ({ sessionId, onSuccess, onClose, showPaymentOptions }) => {
                     color: 'white',
                     border: 'none',
                     borderRadius: '6px',
-                    cursor: 'pointer',
+                    cursor: payBusy ? 'not-allowed' : 'pointer',
                     fontWeight: 600,
-                    fontSize: '1rem'
+                    fontSize: '1rem',
+                    opacity: payBusy ? 0.6 : 1,
                   }}
                 >
-                  Pay $300 Now
+                  {payBusy === 'lifetime' ? 'Redirecting…' : 'Pay $300 with Stripe'}
                 </button>
               </div>
 
@@ -237,6 +273,10 @@ const ReviewModal = ({ sessionId, onSuccess, onClose, showPaymentOptions }) => {
                 disabled children. Your DROP continues helping! 🧒💙
               </p>
             </div>
+
+            {error && (
+              <p data-testid="payment-error" style={{ color: '#dc2626', marginBottom: '1rem', fontSize: '0.9rem' }}>{error}</p>
+            )}
 
             <button
               onClick={() => setShowReview(true)}
