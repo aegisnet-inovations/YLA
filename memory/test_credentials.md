@@ -1,20 +1,19 @@
 # YLA - Test Credentials
 
 ## Admin / Owner Login
-- **URL (preview):** https://ai-childcare-1.preview.emergentagent.com/admin
-- **URL (production):** https://ai-childcare-1.emergent.host/admin
+- **Preview URL:** https://ai-childcare-1.preview.emergentagent.com/admin
+- **Production URL:** https://ai-childcare-1.emergent.host/admin
 - **Email:** `michaelnorthern@proton.me`
 - **Password:** `YLA-Owner-2026!`
-- **Role:** admin (JWT, 30-day expiry)
+- **Role:** admin (JWT via httpOnly cookie, 30-day expiry)
 
 ## Owner Bypass Behavior
-Once logged in on a device, `localStorage.yla_admin_token` is attached as a
-Bearer token on every `/api/chat` and `/api/access/*` call, and the backend
-returns `access_type: "owner"` with unlimited access — bypassing trial/review/payment.
+Admin cookie (`yla_admin_token`) is sent automatically on /api/chat and /api/access/*.
+When present, backend returns `access_type: "owner"` → unlimited access.
 
-## Auth endpoints
-- `POST /api/admin/login` — `{email, password}` → `{token, email}`
-- `GET  /api/admin/me` — bearer auth → `{email, role}`
-- `GET  /api/admin/stats` — bearer auth
-- `GET  /api/admin/users` — bearer auth
-- `GET  /api/admin/reviews` — bearer auth
+## Voice Mode (AEGIS Sentinel)
+Enabled by the mic button in the chat header. Persisted via `localStorage.yla_voice`.
+- Always-listening; wake word: **"YLA"**
+- Speaks replies aloud via SpeechSynthesis API
+- Auto-restarts on recognition end
+- Requires browser mic permission

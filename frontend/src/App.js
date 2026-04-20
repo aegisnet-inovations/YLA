@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import '@/App.css';
 import axios from 'axios';
-import { Trash2, Sparkles, Code, Search, Clock, Star, HelpCircle, Shield } from 'lucide-react';
+import { Trash2, Sparkles, Code, Search, Clock, Star, HelpCircle, Shield, Mic, MicOff } from 'lucide-react';
 import ChatMessage from '@/components/ChatMessage';
 import ChatInput from '@/components/ChatInput';
 import WelcomeScreen from '@/components/WelcomeScreen';
@@ -9,6 +9,7 @@ import ReviewModal from '@/components/ReviewModal';
 import HowToUse from '@/components/HowToUse';
 import AdminPage from '@/components/AdminPage';
 import EmailGate from '@/components/EmailGate';
+import useVoiceSentinel from '@/hooks/useVoiceSentinel';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -34,6 +35,8 @@ function App() {
   const [showReviewModal, setShowReviewModal] = useState(false);
   const [showHowTo, setShowHowTo] = useState(false);
   const [emailCaptured, setEmailCaptured] = useState(() => !!localStorage.getItem('yla_email'));
+  const [voiceEnabled, setVoiceEnabled] = useState(() => localStorage.getItem('yla_voice') === '1');
+  const [animatingId, setAnimatingId] = useState(null);
   const messagesEndRef = useRef(null);
 
   // Memoized scroll function
@@ -81,20 +84,20 @@ function App() {
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
-  const sendMessage = async () => {
-    if (!inputMessage.trim() || isLoading) return;
+  const sendText = useCallback(async (text, { spoken = false } = {}) => {
+    const trimmed = (text || '').trim();
+    if (!trimmed || isLoading) return;
 
     // Check access
     if (accessStatus && !accessStatus.has_access) {
-      alert(accessStatus.message);
-      setShowReviewModal(true);
+      if (!spoken) { alert(accessStatus.message); setShowReviewModal(true); }
       return;
     }
 
     const userMessage = {
       id: generateUUID(),
       role: 'user',
-      content: inputMessage,
+      content: trimmed,
       timestamp: new Date().toISOString()
     };
 
@@ -104,7 +107,7 @@ function App() {
 
     try {
       const response = await api.post('/chat', {
-        message: inputMessage,
+        message: trimmed,
         session_id: sessionId
       });
 
@@ -112,10 +115,20 @@ function App() {
         id: response.data.message_id,
         role: 'assistant',
         content: response.data.response,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        _fresh: true,
       };
 
       setMessages(prev => [...prev, assistantMessage]);
+      setAnimatingId(assistantMessage.id);
+      if (spoken && 'speechSynthesis' in window) {
+        try {
+          window.speechSynthesis.cancel();
+          const u = new SpeechSynthesisUtterance(assistantMessage.content);
+          u.rate = 1.0;
+          window.speechSynthesis.speak(u);
+        } catch { /* noop */ }
+      }
     } catch {
       const errorMessage = {
         id: generateUUID(),
@@ -127,6 +140,24 @@ function App() {
     } finally {
       setIsLoading(false);
     }
+  }, [accessStatus, isLoading, sessionId]);
+
+  const sendMessage = () => sendText(inputMessage);
+
+  // AEGIS Sentinel: always-on voice (wake word "YLA")
+  const handleVoiceCommand = useCallback((spokenText) => {
+    sendText(spokenText, { spoken: true });
+  }, [sendText]);
+
+  const voice = useVoiceSentinel({
+    enabled: voiceEnabled,
+    onCommand: handleVoiceCommand,
+  });
+
+  const toggleVoice = () => {
+    const next = !voiceEnabled;
+    setVoiceEnabled(next);
+    localStorage.setItem('yla_voice', next ? '1' : '0');
   };
 
   const clearChat = async () => {
@@ -210,6 +241,23 @@ function App() {
               <span>Fort Knox Security</span>
             </div>
           </div>
+          <button
+            onClick={toggleVoice}
+            className="clear-button"
+            data-testid="voice-toggle"
+            title={voice.supported ? (voiceEnabled ? `AEGIS Sentinel: ${voice.status}` : 'Enable always-on voice (say "YLA…")') : 'Voice not supported in this browser'}
+            disabled={!voice.supported}
+            style={{
+              background: voiceEnabled
+                ? (voice.status === 'speaking' ? '#8b5cf6' : voice.status === 'armed' ? '#f59e0b' : '#10b981')
+                : '#6b7280',
+              marginRight: '0.5rem',
+              opacity: voice.supported ? 1 : 0.5,
+              cursor: voice.supported ? 'pointer' : 'not-allowed',
+            }}
+          >
+            {voiceEnabled ? <Mic size={20} /> : <MicOff size={20} />}
+          </button>
           <button 
             onClick={() => setShowHowTo(true)}
             className="clear-button"
@@ -229,14 +277,49 @@ function App() {
         </div>
       </div>
 
+      {voiceEnabled && voice.supported && (
+        <div
+          data-testid="voice-status-banner"
+          style={{
+            background:
+              voice.status === 'speaking' ? '#ede9fe'
+              : voice.status === 'armed' ? '#fef3c7'
+              : voice.status === 'denied' ? '#fee2e2'
+              : '#dcfce7',
+            color: '#111827',
+            padding: '0.5rem 1rem',
+            fontSize: '0.85rem',
+            fontWeight: 500,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+            borderBottom: '1px solid #e5e7eb',
+          }}
+        >
+          <Mic size={14} />
+          {voice.status === 'denied' && 'Microphone permission denied. Enable it in your browser settings.'}
+          {voice.status === 'speaking' && 'YLA is speaking…'}
+          {voice.status === 'armed' && 'Listening for your command…'}
+          {(voice.status === 'listening' || voice.status === 'idle') &&
+            'AEGIS Sentinel active — say "YLA" followed by your command.'}
+        </div>
+      )}
+
       {/* Chat Container */}
       <div className="chat-container" data-testid="chat-container">
         {messages.length === 0 ? (
           <WelcomeScreen setInputMessage={setInputMessage} />
         ) : (
           <div className="messages-list" data-testid="messages-list">
-            {messages.map((msg) => (
-              <ChatMessage key={msg.id} message={msg} />
+            {messages.map((msg, idx) => (
+              <ChatMessage
+                key={msg.id}
+                message={msg}
+                index={idx}
+                animate={msg.id === animatingId}
+                charsPerSec={25}
+                onTyped={() => { if (msg.id === animatingId) setAnimatingId(null); }}
+              />
             ))}
             {isLoading && (
               <div className="message assistant" data-testid="loading-indicator">
